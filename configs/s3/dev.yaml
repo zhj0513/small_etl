@@ -1,0 +1,8 @@
+s3:
+  endpoint: ${oc.env:S3_ENDPOINT,localhost:19000}
+  access_key: ${oc.env:S3_ACCESS_KEY,minioadmin}
+  secret_key: ${oc.env:S3_SECRET_KEY,minioadmin123}
+  secure: false
+  bucket: ${oc.env:S3_BUCKET,fake-data-for-training}
+  assets_file: account_assets.csv
+  trades_file: trades.csv

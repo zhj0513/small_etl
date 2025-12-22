@@ -1,0 +1,10 @@
+defaults:
+  - db: dev
+  - s3: dev
+  - etl: default
+  - _self_
+
+app:
+  name: small_etl
+  version: 0.1.0
+  log_level: INFO

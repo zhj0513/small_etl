@@ -1,0 +1,8 @@
+etl:
+  batch_size: 10000
+  validation:
+    tolerance: 0.01
+    strict_mode: false
+  retry:
+    max_attempts: 3
+    backoff_factor: 2
