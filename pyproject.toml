@@ -1,0 +1,65 @@
+[project]
+authors = [{name = "zhaohanjun", email = "hankin_zhao@qq.com"}]
+dependencies = []  # 定义项目的运行时依赖项
+name = "small_etl"
+requires-python = ">= 3.12"
+version = "0.1.0"
+
+[tool.pixi.workspace]
+channels = ["https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+minio = ">=7.2.9"
+faker = ">=28.4.1"
+
+[tool.pixi.tasks]
+generate = "python generate_and_upload.py"
+
+[tool.pixi.dependencies]  # 定义 Pixi 环境中的依赖项
+python = "3.12.*"
+pytest = ">=9.0.2,<10"
+pytest-cov = ">=7.0.0,<8"
+ruff = ">=0.14.8,<0.15"
+pyright = ">=1.1.407,<2"
+pyrefly = ">=0.45.2,<0.46"
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --cov=src"
+testpaths = [
+    "tests",
+]
+python_files = ["test_*.py", "*_test.py"]
+
+[tool.ruff]
+# 统一使用 Ruff 作为格式化与基础/中等强度的 Lint 工具
+line-length = 180
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+# 启用基础规则 + 导入排序（等价于 isort）
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+force-single-line = false
+
+[tool.pyright]
+# 使用 Pyright 进行类型检查（VSCode 中由 Pylance 实时执行）
+include = ["src"]
+typeCheckingMode = "standard"
+reportMissingImports = "error"
+pythonVersion = "3.12"
+
+[tool.pyrefly]
+project-includes = [
+    "src"
+]
+python-version = "3.12.0"
+infer-with-first-use = false
+permissive-ignores = true
+
+[tool.pyrefly.errors]
+missing-import = "error"
