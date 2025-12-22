@@ -1,0 +1,118 @@
+# =====================
+# Python
+# =====================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# =====================
+# Virtual environments
+# =====================
+.venv/
+venv/
+ENV/
+env/
+.pixi/
+
+# =====================
+# Packaging / build
+# =====================
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =====================
+# Dependency / tool caches
+# =====================
+.pip-cache/
+.mypy_cache/
+.pytype/
+.pyright/
+.pytest_cache/
+.ruff_cache/
+.cache/
+
+# =====================
+# Logs / runtime
+# =====================
+*.log
+*.pid
+
+# =====================
+# Jupyter
+# =====================
+.ipynb_checkpoints/
+
+# =====================
+# IDE / Editor
+# =====================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =====================
+# OS
+# =====================
+.DS_Store
+Thumbs.db
+
+# =====================
+# Environment variables / secrets
+# =====================
+.env
+.env.*
+secrets/
+*.pem
+*.key
+
+# =====================
+# Data (测试数据)
+# =====================
+data/
+datasets/
+*.csv
+*.parquet
+*.feather
+
+# =====================
+# Coverage / reports
+# =====================
+htmlcov/
+.coverage
+coverage.xml
+
+# =====================
+# Docker
+# =====================
+docker-compose.override.yml
+
+# =====================
+# AI coding tools / agents
+# =====================
+
+# Claude Code / Claude Spec Workflow
+.claude/
+.claude*/
+.claude_cache/
+.claude_logs/
+.claude_transcripts/
+.claude_workspace/
+specs/.cache/
+specs/**/outputs/
+specs/**/artifacts/
+
+# Codex / OpenAI CLI
+.codex/
+.codex_cache/
+.codex_logs/
+.codex_transcripts/
+
+# Cursor
+.cursor/
+.cursor-cache/
+.cursor-tmp/
