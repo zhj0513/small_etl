@@ -6,7 +6,8 @@ requires-python = ">= 3.12"
 version = "0.1.0"
 
 [tool.pixi.workspace]
-channels = ["https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/"]
+# channels = ["https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/"]  # 清华 TUNA 近一年逐步 限制或关闭 对 conda 生态的公共镜像访问
+channels = ["conda-forge"]
 platforms = ["linux-64"]
 
 [tool.pixi.pypi-dependencies]
