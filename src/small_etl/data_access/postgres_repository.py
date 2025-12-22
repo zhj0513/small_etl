@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 
 import polars as pl
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlmodel import Session, create_engine, select
 
 from small_etl.domain.models import Asset, Trade
@@ -153,9 +153,8 @@ class PostgresRepository:
             Number of asset records.
         """
         with Session(self._engine) as session:
-            result = session.execute(text("SELECT COUNT(*) FROM asset"))
-            row = result.fetchone()
-            return row[0] if row else 0
+            result = session.exec(select(func.count()).select_from(Asset))
+            return result.one()
 
     def get_trade_count(self) -> int:
         """Get total count of trade records.
@@ -164,15 +163,14 @@ class PostgresRepository:
             Number of trade records.
         """
         with Session(self._engine) as session:
-            result = session.execute(text("SELECT COUNT(*) FROM trade"))
-            row = result.fetchone()
-            return row[0] if row else 0
+            result = session.exec(select(func.count()).select_from(Trade))
+            return result.one()
 
     def truncate_tables(self) -> None:
         """Truncate asset and trade tables."""
         with Session(self._engine) as session:
-            session.execute(text("TRUNCATE TABLE trade CASCADE"))
-            session.execute(text("TRUNCATE TABLE asset CASCADE"))
+            session.execute(text("TRUNCATE TABLE trade CASCADE"))  # pyrefly: ignore[deprecated]
+            session.execute(text("TRUNCATE TABLE asset CASCADE"))  # pyrefly: ignore[deprecated]
             session.commit()
             logger.info("Truncated asset and trade tables")
 

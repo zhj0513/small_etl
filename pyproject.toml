@@ -24,10 +24,10 @@ psycopg2-binary = ">=2.9.0"
 small_etl = { path = ".", editable = true }
 
 [tool.pixi.tasks]
-generate = "python generate_and_upload.py"
 
 [tool.pixi.dependencies]  # 定义 Pixi 环境中的依赖项
 python = "3.12.*"
+nodejs = ">=22"  # pyright 依赖 nodejs，显式指定新版本
 pytest = ">=9.0.2,<10"
 pytest-cov = ">=7.0.0,<8"
 ruff = ">=0.14.8,<0.15"
@@ -71,5 +71,6 @@ permissive-ignores = true
 
 [tool.pyrefly.errors]
 missing-import = "error"
-bad-override = "ignore"  # SQLModel 和 Pandera 的标准用法会触发误报
-deprecated = "ignore"  # session.execute 对原生 SQL 是必需的
+# 以下这些提示，在代码处注释（不要全局开）
+# bad-override = "ignore"
+# deprecated = "ignore"

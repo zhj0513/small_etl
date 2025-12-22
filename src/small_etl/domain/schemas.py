@@ -27,7 +27,7 @@ class AssetSchema(pa.DataFrameModel):
     total_asset: pl.Decimal = pa.Field(ge=Decimal("0"))
     updated_at: pl.Datetime = pa.Field()
 
-    class Config:
+    class Config:  # type: ignore[override]  # pyrefly: ignore[bad-override]
         """Pandera configuration."""
 
         strict = True
@@ -61,7 +61,7 @@ class TradeSchema(pa.DataFrameModel):
     created_at: pl.Datetime = pa.Field()
     updated_at: pl.Datetime = pa.Field()
 
-    class Config:
+    class Config:  # type: ignore[override] # pyrefly: ignore[bad-override]
         """Pandera configuration."""
 
         strict = True

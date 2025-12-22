@@ -21,8 +21,6 @@ class Asset(SQLModel, table=True):
         updated_at: Last update timestamp (UTC).
     """
 
-    __tablename__ = "asset"
-
     id: Optional[int] = Field(default=None, primary_key=True)
     account_id: str = Field(unique=True, index=True, max_length=20)
     account_type: int = Field(index=True)
@@ -53,8 +51,6 @@ class Trade(SQLModel, table=True):
         created_at: Record creation timestamp (UTC).
         updated_at: Last update timestamp (UTC).
     """
-
-    __tablename__ = "trade"
 
     id: Optional[int] = Field(default=None, primary_key=True)
     account_id: str = Field(index=True, max_length=20)
