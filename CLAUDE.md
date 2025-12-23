@@ -11,6 +11,9 @@ pixi install
 # Run all unit tests
 pixi run pytest tests/unit/ -v --no-cov
 
+# Run integration tests (requires PostgreSQL running)
+pixi run pytest tests/integration/ -v --no-cov
+
 # Run a single test file
 pixi run pytest tests/unit/test_validator.py -v --no-cov
 
@@ -62,26 +65,40 @@ src/small_etl/
 ├── domain/          # Data models (SQLModel), enums, Pandera schemas
 ├── data_access/     # S3Connector, DuckDBClient, PostgresRepository
 ├── services/        # ExtractorService, ValidatorService, LoaderService, AnalyticsService
+├── config/          # Configuration utilities
 └── application/     # ETLPipeline orchestration
 ```
 
 ### Data Flow
 
-```
-S3 (CSV) → Extractor → DuckDB (validation) → Validator → Loader → PostgreSQL
-                                                              ↓
-                                                         Analytics
+```mermaid
+flowchart LR
+    S3[S3 CSV] --> Extractor
+    Extractor --> DuckDB[DuckDB Validation]
+    DuckDB --> Validator
+    Validator --> Loader
+    Loader --> PostgreSQL
+    PostgreSQL --> Analytics
 ```
 
 ### Key Components
 
 - **ETLPipeline** (`application/pipeline.py`): Main orchestrator, use `with ETLPipeline(config) as pipeline`
-- **ValidatorService** (`services/validator.py`): Field-level + business rule validation with tolerance (±0.01)
+- **ExtractorService** (`services/extractor.py`): Reads CSV from S3, returns Polars DataFrame
+- **ValidatorService** (`services/validator.py`): Field-level + business rule validation with Pandera schemas
+- **LoaderService** (`services/loader.py`): Batch loads validated data to PostgreSQL
+- **AnalyticsService** (`services/analytics.py`): Provides statistics and analysis
 - **PostgresRepository** (`data_access/postgres_repository.py`): Bulk upsert with `polars_to_assets()` / `polars_to_trades()`
+- **DuckDBClient** (`data_access/duckdb_client.py`): In-memory data validation
+- **S3Connector** (`data_access/s3_connector.py`): MinIO/S3 file operations
 
 ### Data Models
 
 Two tables: `asset` and `trade` (Trade.account_id → Asset.account_id FK)
+
+**Asset fields**: `account_id`, `account_type`, `cash`, `frozen_cash`, `market_value`, `total_asset`, `updated_at`
+
+**Trade fields**: `account_id`, `account_type`, `traded_id`, `stock_code`, `traded_time`, `traded_price`, `traded_volume`, `traded_amount`, `strategy_name`, `order_remark`, `direction`, `offset_flag`, `created_at`, `updated_at`
 
 Validation rules:
 - `total_asset = cash + frozen_cash + market_value` (±0.01 tolerance)
@@ -91,9 +108,27 @@ Validation rules:
 ### Configuration
 
 Hydra configs in `configs/`:
-- `db/dev.yaml`, `db/test.yaml`: Database connection (supports env vars: `DB_HOST`, `DB_PORT`, etc.)
+- `config.yaml`: Main config entry point
+- `db/dev.yaml`, `db/test.yaml`: Database connection (supports env vars: `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`)
 - `s3/dev.yaml`: MinIO/S3 connection
 - `etl/default.yaml`: batch_size, validation tolerance
+
+Default test database: `postgresql://etl:etlpass@localhost:15432/etl_test_db`
+
+## Test Structure
+
+```
+tests/
+├── conftest.py              # Shared fixtures (test_db_engine, sample data)
+├── unit/                    # Unit tests (no external dependencies)
+│   ├── test_analytics.py
+│   ├── test_duckdb.py
+│   ├── test_models.py
+│   ├── test_pipeline.py
+│   └── test_validator.py
+└── integration/             # Integration tests (requires PostgreSQL)
+    └── test_full_pipeline.py
+```
 
 ## Code Conventions
 
@@ -101,3 +136,17 @@ Hydra configs in `configs/`:
 - Use `datetime.now(UTC)` instead of deprecated `datetime.utcnow()`
 - For raw SQL in SQLModel sessions, use `session.execute(text(...))` not `session.exec()`
 - pyrefly `bad-override` and `deprecated` warnings are suppressed for SQLModel/Pandera compatibility
+- Ruff is configured with line-length=180 and target-version=py312
+
+## Dependencies
+
+Key dependencies (managed via pixi):
+- Python 3.12
+- SQLModel, Alembic (ORM and migrations)
+- DuckDB, Polars, PyArrow (data processing)
+- Pandera (schema validation)
+- Hydra (configuration)
+- MinIO (S3 client)
+- psycopg2-binary (PostgreSQL driver)
+
+Dev tools: pytest, pytest-cov, ruff, pyright, pyrefly
