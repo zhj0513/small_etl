@@ -81,6 +81,71 @@ pixi run python -m small_etl run \
     --db-password secret
 ```
 
+### 定时任务管理
+
+使用 `schedule` 子命令管理 ETL 定时任务。任务信息持久化存储在 PostgreSQL 中，支持进程重启后恢复。
+
+**列出所有任务:**
+
+```bash
+pixi run python -m small_etl schedule list --env test
+```
+
+**添加定时任务:**
+
+```bash
+# 添加每天凌晨 2 点执行完整 ETL
+pixi run python -m small_etl schedule add --env test \
+    --job-id daily_etl \
+    --etl-command run \
+    --interval day \
+    --at "02:00"
+
+# 添加每小时执行 assets 同步
+pixi run python -m small_etl schedule add --env test \
+    --job-id hourly_assets \
+    --etl-command assets \
+    --interval hour
+
+# 添加每分钟执行 (用于测试)
+pixi run python -m small_etl schedule add --env test \
+    --job-id minute_test \
+    --etl-command trades \
+    --interval minute
+```
+
+**任务参数说明:**
+
+| 参数 | 说明 | 可选值 |
+|------|------|--------|
+| `--job-id` | 任务唯一标识 | 自定义字符串 |
+| `--etl-command` | ETL 命令 | run / assets / trades |
+| `--interval` | 调度间隔 | day / hour / minute |
+| `--at` | 执行时间 (仅 day 间隔有效) | "HH:MM" 格式 |
+
+**暂停/恢复任务:**
+
+```bash
+# 暂停任务
+pixi run python -m small_etl schedule pause --env test --job-id daily_etl
+
+# 恢复任务
+pixi run python -m small_etl schedule resume --env test --job-id daily_etl
+```
+
+**移除任务:**
+
+```bash
+pixi run python -m small_etl schedule remove --env test --job-id daily_etl
+```
+
+**启动调度器:**
+
+```bash
+# 前台运行调度器 (按 Ctrl+C 停止)
+pixi run python -m small_etl schedule start --env test
+```
+
 ### 退出码
 
 | 退出码 | 含义 |
