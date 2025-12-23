@@ -1,0 +1,18 @@
+# Scheduler configuration
+enabled: true
+check_interval: 1  # Check interval in seconds
+
+# Pre-configured jobs (loaded at startup)
+# These jobs will be added automatically when the scheduler starts
+jobs: []
+# Example job configuration:
+# jobs:
+#   - job_id: daily_full_etl
+#     command: run
+#     interval: day
+#     at: "02:00"
+#     enabled: true
+#   - job_id: hourly_assets
+#     command: assets
+#     interval: hour
+#     enabled: true

@@ -20,6 +20,8 @@ flowchart LR
 
 | 层级 | 技术选型 | 用途 |
 |------|----------|------|
+| CLI | argparse | 命令行参数解析 |
+| 任务调度 | APScheduler | 定时任务管理（PostgreSQL持久化） |
 | 数据源 | MinIO/AWS S3 | CSV 文件存储 |
 | 数据处理 | DuckDB + Polars | 内存数据转换、列式处理 |
 | Schema验证 | Pandera | DataFrame 验证规则定义 |
@@ -38,6 +40,16 @@ flowchart LR
 
 ```mermaid
 flowchart TB
+    %% ======================
+    %% CLI Layer
+    %% ======================
+    CLI["CLI Layer<br/>(命令行层)<br/>- 参数解析 (argparse)<br/>- 命令分发<br/>- 结果输出"]
+
+    %% ======================
+    %% Scheduler Layer
+    %% ======================
+    SCHEDULER["Scheduler Layer<br/>(调度层)<br/>- ETLScheduler 定时调度<br/>- APScheduler PostgreSQL持久化<br/>- ScheduledJob 任务管理"]
+
     %% ======================
     %% Application Layer
     %% ======================
@@ -70,6 +82,9 @@ flowchart TB
     %% ======================
     %% Layer Connections
     %% ======================
+    CLI --> SCHEDULER
+    CLI --> APP
+    SCHEDULER --> APP
     APP --> SERVICE
     SERVICE --> DAL
     DAL --> DOMAIN
@@ -77,6 +92,19 @@ flowchart TB
 ```
 
 ### 2.2 各层职责
+
+#### CLI Layer (命令行层)
+- **参数解析**: 使用 argparse 解析命令行参数
+- **命令分发**: 根据子命令调用不同的 Pipeline 方法
+- **配置覆盖**: 支持通过命令行参数覆盖 Hydra 配置
+- **结果输出**: 格式化输出执行结果和统计信息
+
+#### Scheduler Layer (调度层)
+- **ETLScheduler**: 基于 APScheduler 的定时任务调度器，支持 PostgreSQL 持久化
+- **ScheduledJob**: 定时任务定义，包含任务ID、命令、调度规则
+- **任务管理**: 支持添加、移除、暂停、恢复、列出定时任务
+- **任务持久化**: 使用 SQLAlchemyJobStore 将任务存储在 PostgreSQL
+- **调度模式**: 支持阻塞式（BlockingScheduler）和后台（BackgroundScheduler）运行
 
 #### Application Layer (应用层)
 - **ETLPipeline**: ETL 流程编排，支持完整流程或单独运行 assets/trades
@@ -101,7 +129,276 @@ flowchart TB
 
 ## 3. 核心组件设计
 
-### 3.1 ETL Pipeline 组件
+### 3.1 CLI 组件
+
+```mermaid
+flowchart LR
+    subgraph CLI["CLI Entry Point"]
+        MAIN["main()"] --> PARSE["parse_args()"]
+        PARSE --> RUN["run"]
+        PARSE --> ASSETS["assets"]
+        PARSE --> TRADES["trades"]
+        PARSE --> CLEAN["clean"]
+        PARSE --> SCHEDULE["schedule"]
+    end
+
+    RUN --> Pipeline["ETLPipeline.run()"]
+    ASSETS --> Pipeline2["ETLPipeline.run_assets_only()"]
+    TRADES --> Pipeline3["ETLPipeline.run_trades_only()"]
+    CLEAN --> Repo["PostgresRepository.truncate_tables()"]
+    SCHEDULE --> Scheduler["ETLScheduler"]
+```
+
+#### 3.1.1 命令行接口设计
+
+**入口模块:** `src/small_etl/cli.py`
+
+**支持的命令:**
+
+```bash
+# 完整 ETL 流程
+pixi run python -m small_etl run
+
+# 仅处理 Assets
+pixi run python -m small_etl assets
+
+# 仅处理 Trades
+pixi run python -m small_etl trades
+
+# 清空数据表 (truncate asset 和 trade 表)
+pixi run python -m small_etl clean
+
+# 定时任务管理
+pixi run python -m small_etl schedule start|add|list|remove
+```
+
+**通用参数:**
+
+| 参数 | 短选项 | 说明 | 默认值 |
+|------|--------|------|--------|
+| `--env` | `-e` | 环境配置 (dev/test) | dev |
+| `--batch-size` | `-b` | 批处理大小 | 10000 |
+| `--verbose` | `-v` | 详细输出 | False |
+| `--dry-run` | | 仅验证不加载 | False |
+
+**S3 参数覆盖:**
+
+| 参数 | 说明 |
+|------|------|
+| `--s3-endpoint` | S3/MinIO 端点 |
+| `--s3-bucket` | S3 bucket 名称 |
+| `--assets-file` | Assets CSV 文件名 |
+| `--trades-file` | Trades CSV 文件名 |
+
+**数据库参数覆盖:**
+
+| 参数 | 说明 |
+|------|------|
+| `--db-host` | 数据库主机 |
+| `--db-port` | 数据库端口 |
+| `--db-name` | 数据库名称 |
+| `--db-user` | 数据库用户 |
+| `--db-password` | 数据库密码 |
+
+#### 3.1.2 接口定义
+
+```python
+def main() -> int:
+    """CLI 入口函数，返回退出码"""
+    ...
+
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
+    """解析命令行参数"""
+    ...
+
+def run_pipeline(args: argparse.Namespace) -> int:
+    """执行 ETL Pipeline"""
+    ...
+
+def print_result(result: PipelineResult, verbose: bool = False) -> None:
+    """格式化输出执行结果"""
+    ...
+```
+
+#### 3.1.3 使用示例
+
+```bash
+# 使用测试环境配置
+pixi run python -m small_etl.cli run --env test
+
+# 自定义批处理大小和详细输出
+pixi run python -m small_etl.cli run --batch-size 5000 --verbose
+
+# 仅验证数据，不写入数据库
+pixi run python -m small_etl.cli run --dry-run
+
+# 覆盖 S3 配置
+pixi run python -m small_etl.cli run --s3-bucket my-bucket --assets-file data.csv
+
+# 覆盖数据库配置
+pixi run python -m small_etl.cli run --db-host 192.168.1.100 --db-port 5432
+```
+
+#### 3.1.4 退出码
+
+| 退出码 | 含义 |
+|--------|------|
+| 0 | 成功 |
+| 1 | 一般错误 |
+| 2 | 参数错误 |
+| 3 | 连接错误 (S3/DB) |
+| 4 | 验证错误 (有无效数据) |
+
+#### 3.1.5 clean 命令
+
+`clean` 命令用于清空数据库中的 asset 和 trade 表，方便测试时重置数据。
+
+**参数:**
+
+| 参数 | 短选项 | 说明 | 默认值 |
+|------|--------|------|--------|
+| `--env` | `-e` | 环境配置 (dev/test) | dev |
+| `--verbose` | `-v` | 详细输出 | False |
+| `--db-host` | | 数据库主机 | 配置文件 |
+| `--db-port` | | 数据库端口 | 配置文件 |
+| `--db-name` | | 数据库名称 | 配置文件 |
+| `--db-user` | | 数据库用户 | 配置文件 |
+| `--db-password` | | 数据库密码 | 配置文件 |
+
+**使用示例:**
+
+```bash
+# 清空开发环境数据
+pixi run python -m small_etl clean
+
+# 清空测试环境数据
+pixi run python -m small_etl clean --env test
+
+# 清空指定数据库
+pixi run python -m small_etl clean --db-host 192.168.1.100 --db-name mydb
+```
+
+### 3.2 Scheduler 组件
+
+```mermaid
+flowchart LR
+    subgraph Scheduler["Scheduler Layer"]
+        SCHED["ETLScheduler"] --> JOBS["ScheduledJob"]
+    end
+    SCHED --> Pipeline["ETLPipeline"]
+    CLI["CLI schedule"] --> SCHED
+```
+
+#### 3.2.1 ETLScheduler (调度器)
+
+**职责:**
+- 管理定时任务的生命周期
+- 基于 APScheduler 实现调度，支持 CronTrigger 和 IntervalTrigger
+- 使用 SQLAlchemyJobStore 将任务持久化到 PostgreSQL
+- 支持任务的添加、移除、暂停、恢复、列出
+- 调用 ETLPipeline 执行实际 ETL 操作
+
+**接口:**
+```python
+@dataclass
+class ScheduledJob:
+    """定时任务定义"""
+    job_id: str           # 任务唯一标识
+    command: str          # ETL命令: run/assets/trades
+    interval: str         # 调度间隔: day/hour/minute
+    at_time: str | None   # 执行时间点: "02:00"
+    enabled: bool         # 是否启用
+    next_run: datetime | None  # 下次执行时间
+    last_run: datetime | None  # 上次执行时间
+
+class ETLScheduler:
+    """ETL 定时任务调度器（基于 APScheduler）"""
+    def __init__(self, config: dict[str, Any], blocking: bool = True): ...
+    def add_job(self, job_id: str, command: str, interval: str, at_time: str | None = None) -> ScheduledJob: ...
+    def remove_job(self, job_id: str) -> bool: ...
+    def pause_job(self, job_id: str) -> bool: ...
+    def resume_job(self, job_id: str) -> bool: ...
+    def list_jobs(self) -> list[ScheduledJob]: ...
+    def get_job(self, job_id: str) -> ScheduledJob | None: ...
+    def start(self) -> None: ...  # 启动调度器
+    def stop(self) -> None: ...
+    @property
+    def is_running(self) -> bool: ...
+    @property
+    def job_count(self) -> int: ...
+```
+
+**持久化机制:**
+- 使用 `apscheduler.jobstores.sqlalchemy.SQLAlchemyJobStore`
+- 自动在 PostgreSQL 中创建 `apscheduler_jobs` 表
+- 任务在进程重启后自动恢复
+
+#### 3.2.2 CLI schedule 子命令
+
+**支持的操作:**
+
+```bash
+# 启动调度器（前台阻塞运行）
+pixi run python -m small_etl schedule start
+
+# 添加定时任务
+pixi run python -m small_etl schedule add --job-id <id> --etl-command <cmd> --interval <interval> [--at <time>]
+
+# 列出所有任务
+pixi run python -m small_etl schedule list
+
+# 移除任务
+pixi run python -m small_etl schedule remove --job-id <id>
+
+# 暂停任务
+pixi run python -m small_etl schedule pause --job-id <id>
+
+# 恢复任务
+pixi run python -m small_etl schedule resume --job-id <id>
+```
+
+**参数说明:**
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `--job-id` | 任务唯一标识符 | `daily_etl` |
+| `--etl-command` | ETL 命令 (run/assets/trades) | `run` |
+| `--interval` | 调度间隔 (day/hour/minute) | `day` |
+| `--at` | 执行时间点 (仅 day 间隔有效) | `02:00` |
+
+**使用示例:**
+
+```bash
+# 每天凌晨2点执行完整ETL
+pixi run python -m small_etl schedule add --job-id daily_etl --etl-command run --interval day --at "02:00"
+
+# 每小时执行assets同步
+pixi run python -m small_etl schedule add --job-id hourly_assets --etl-command assets --interval hour
+
+# 每分钟执行（测试用）
+pixi run python -m small_etl schedule add --job-id test_job --etl-command run --interval minute
+```
+
+#### 3.2.3 调度配置
+
+**配置文件:** `configs/scheduler/default.yaml`
+
+```yaml
+enabled: true
+check_interval: 1  # 调度循环检查间隔（秒）
+jobs:
+  - job_id: daily_full_etl
+    command: run
+    interval: day
+    at: "02:00"
+    enabled: true
+  - job_id: hourly_assets
+    command: assets
+    interval: hour
+    enabled: true
+```
+
+### 3.3 ETL Pipeline 组件
 
 ```mermaid
 flowchart LR
@@ -116,7 +413,7 @@ flowchart LR
     A --> AS["AnalyticsService"]
 ```
 
-#### 3.1.1 ExtractorService (提取器)
+#### 3.3.1 ExtractorService (提取器)
 
 **职责:**
 - 连接 S3/MinIO 存储
@@ -136,7 +433,7 @@ class ExtractorService:
 - 使用 DuckDB SQL 进行类型转换: `CAST(field AS DECIMAL(20,2))`
 - 自动处理 CSV 编码和分隔符
 
-#### 3.1.2 ValidatorService (验证器)
+#### 3.3.2 ValidatorService (验证器)
 
 **职责:**
 - 字段类型和范围验证
@@ -175,7 +472,7 @@ class ValidatorService:
   - offset_flag ∈ {48, 49, 50, 51, 52, 53, 54}
   - traded_amount = traded_price × traded_volume (±0.01)
 
-#### 3.1.3 LoaderService (加载器)
+#### 3.3.3 LoaderService (加载器)
 
 **职责:**
 - 将 Polars DataFrame 转换为模型实例
@@ -203,7 +500,7 @@ class LoaderService:
 - 调用 `polars_to_assets()` / `polars_to_trades()` 转换
 - UPSERT 逻辑: 按主键查询，存在则更新，不存在则插入
 
-#### 3.1.4 AnalyticsService (统计分析)
+#### 3.3.4 AnalyticsService (统计分析)
 
 **职责:**
 - 计算汇总统计信息
@@ -238,9 +535,9 @@ class AnalyticsService:
     def trade_statistics(self, df: pl.DataFrame) -> TradeStatistics: ...
 ```
 
-### 3.2 数据模型设计
+### 3.4 数据模型设计
 
-#### 3.2.1 枚举类型
+#### 3.4.1 枚举类型
 
 ```python
 class AccountType(IntEnum):
@@ -270,7 +567,7 @@ class OffsetFlag(IntEnum):
     LOCALFORCECLOSE = 54 # 本地强平
 ```
 
-#### 3.2.2 Asset Model (资产表)
+#### 3.4.2 Asset Model (资产表)
 
 ```python
 class Asset(SQLModel, table=True):
@@ -285,7 +582,7 @@ class Asset(SQLModel, table=True):
     updated_at: datetime
 ```
 
-#### 3.2.3 Trade Model (交易表)
+#### 3.4.3 Trade Model (交易表)
 
 ```python
 class Trade(SQLModel, table=True):
@@ -307,7 +604,7 @@ class Trade(SQLModel, table=True):
     updated_at: datetime
 ```
 
-#### 3.2.4 Pandera Schema (验证模式)
+#### 3.4.4 Pandera Schema (验证模式)
 
 ```python
 class AssetSchema(pa.DataFrameModel):
@@ -334,7 +631,7 @@ class TradeSchema(pa.DataFrameModel):
         ...
 ```
 
-### 3.3 配置管理架构
+### 3.5 配置管理架构
 
 使用 Hydra 实现多环境配置:
 
@@ -346,8 +643,10 @@ configs/
 │   └── test.yaml         # 测试环境数据库
 ├── s3/
 │   └── dev.yaml          # S3/MinIO 配置
-└── etl/
-    └── default.yaml      # ETL 参数配置
+├── etl/
+│   └── default.yaml      # ETL 参数配置
+└── scheduler/
+    └── default.yaml      # 调度器配置
 ```
 
 **主配置 (config.yaml):**
@@ -356,6 +655,7 @@ defaults:
   - db: dev
   - s3: dev
   - etl: default
+  - scheduler: default
   - _self_
 
 app:
@@ -600,6 +900,8 @@ password: ${oc.env:DB_PASSWORD,etlpass}
 ```
 src/small_etl/
 ├── __init__.py              # 包导出: ETLPipeline, Asset, Trade, 枚举, 结果类
+├── __main__.py              # python -m small_etl 入口
+├── cli.py                   # CLI 入口: main(), parse_args(), run_pipeline()
 ├── domain/
 │   ├── __init__.py          # 导出 models, enums, schemas
 │   ├── models.py            # Asset, Trade (SQLModel)
@@ -617,6 +919,9 @@ src/small_etl/
 │   ├── validator.py         # ValidatorService, ValidationResult, ValidationError
 │   ├── loader.py            # LoaderService, LoadResult
 │   └── analytics.py         # AnalyticsService, AssetStatistics, TradeStatistics
+├── scheduler/                   # 新增: 调度模块
+│   ├── __init__.py
+│   └── scheduler.py         # ETLScheduler, ScheduledJob
 ├── application/
 │   ├── __init__.py
 │   └── pipeline.py          # ETLPipeline, PipelineResult
@@ -628,6 +933,8 @@ src/small_etl/
 
 | 决策点 | 选择 | 理由 |
 |--------|------|------|
+| CLI | argparse | 标准库，无额外依赖，功能完整 |
+| 任务调度 | APScheduler | 成熟的Python调度库，支持多种触发器，内置PostgreSQL持久化 |
 | 数据处理 | DuckDB + Polars | 高性能内存处理，列式存储优化 |
 | 验证框架 | Pandera Schema + 自定义验证 | Schema 定义清晰，验证逻辑灵活 |
 | ORM | SQLModel | 类型安全，Pydantic 集成 |
@@ -639,7 +946,41 @@ src/small_etl/
 
 ## 11. 使用示例
 
-### 11.1 完整 ETL 流程
+### 11.1 CLI 命令行使用
+
+```bash
+# 完整 ETL 流程
+pixi run python -m small_etl run
+
+# 使用测试环境
+pixi run python -m small_etl run --env test
+
+# 仅处理 Assets
+pixi run python -m small_etl assets
+
+# 仅处理 Trades
+pixi run python -m small_etl trades
+
+# 清空数据表
+pixi run python -m small_etl clean
+
+# 清空测试环境数据表
+pixi run python -m small_etl clean --env test
+
+# 自定义参数
+pixi run python -m small_etl run --batch-size 5000 --verbose
+
+# 仅验证不加载
+pixi run python -m small_etl run --dry-run
+
+# 覆盖 S3 配置
+pixi run python -m small_etl run --s3-bucket my-bucket --assets-file custom.csv
+
+# 覆盖数据库配置
+pixi run python -m small_etl run --db-host 192.168.1.100 --db-port 5432
+```
+
+### 11.2 Python 脚本调用
 
 ```python
 from hydra import compose, initialize
@@ -660,7 +1001,7 @@ with ETLPipeline(config) as pipeline:
         print(f"Error: {result.error_message}")
 ```
 
-### 11.2 单独运行 Assets 或 Trades
+### 11.3 单独运行 Assets 或 Trades
 
 ```python
 # 只处理 Assets
@@ -670,7 +1011,7 @@ result = pipeline.run_assets_only()
 result = pipeline.run_trades_only()
 ```
 
-### 11.3 数据库初始化
+### 11.4 数据库初始化
 
 ```bash
 # 创建测试数据库
@@ -679,3 +1020,30 @@ pixi run python -m small_etl.data_access.db_setup
 # 运行 Alembic 迁移
 ETL_ENV=test pixi run alembic upgrade head
 ```
+
+### 11.5 定时任务
+
+```bash
+# 启动调度器（前台阻塞运行）
+pixi run python -m small_etl schedule start
+
+# 添加每天凌晨2点执行完整ETL
+pixi run python -m small_etl schedule add --job-id daily_etl --etl-command run --interval day --at "02:00"
+
+# 添加每小时执行assets同步
+pixi run python -m small_etl schedule add --job-id hourly_assets --etl-command assets --interval hour
+
+# 查看所有定时任务
+pixi run python -m small_etl schedule list
+
+# 暂停任务
+pixi run python -m small_etl schedule pause --job-id daily_etl
+
+# 恢复任务
+pixi run python -m small_etl schedule resume --job-id daily_etl
+
+# 移除任务
+pixi run python -m small_etl schedule remove --job-id daily_etl
+```
+
+**注意:** 任务存储在 PostgreSQL 中，进程重启后任务会自动恢复。

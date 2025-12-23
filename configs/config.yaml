@@ -2,6 +2,7 @@ defaults:
   - db: dev
   - s3: dev
   - etl: default
+  - scheduler: default
   - _self_
 
 app:
