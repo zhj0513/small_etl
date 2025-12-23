@@ -77,7 +77,8 @@ class ETLPipeline:
 
         self._duckdb = DuckDBClient()
 
-        self._repo = PostgresRepository(config.db.url)
+        echo = getattr(config.db, "echo", False)
+        self._repo = PostgresRepository(config.db.url, echo=echo)
 
         self._extractor = ExtractorService(self._s3, self._duckdb)
         self._validator = ValidatorService(tolerance=config.etl.validation.tolerance)

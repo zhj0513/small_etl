@@ -39,7 +39,7 @@ class ExtractorService:
         df = self._duckdb.query("""
             SELECT
                 id,
-                account_id,
+                CAST(account_id AS VARCHAR) as account_id,
                 account_type,
                 CAST(cash AS DECIMAL(20, 2)) as cash,
                 CAST(frozen_cash AS DECIMAL(20, 2)) as frozen_cash,
@@ -69,7 +69,7 @@ class ExtractorService:
         df = self._duckdb.query("""
             SELECT
                 id,
-                account_id,
+                CAST(account_id AS VARCHAR) as account_id,
                 account_type,
                 traded_id,
                 stock_code,

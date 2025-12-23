@@ -79,6 +79,9 @@ class ValidatorService:
         logger.info(f"Validating {len(df)} asset records")
         errors: list[ValidationError] = []
 
+        # Add original row index before filtering
+        df = df.with_row_index("_original_index")
+
         valid_mask = pl.lit(True)
 
         valid_mask = valid_mask & df["account_id"].is_not_null() & (df["account_id"].str.len_chars() > 0)
@@ -91,25 +94,26 @@ class ValidatorService:
         valid_mask = valid_mask & (df["total_asset"] >= 0)
 
         df_with_calc = df.with_columns((pl.col("cash") + pl.col("frozen_cash") + pl.col("market_value")).alias("calc_total"))
-        diff = (df_with_calc["total_asset"] - df_with_calc["calc_total"]).abs()
+        diff = (df_with_calc["total_asset"] - df_with_calc["calc_total"]).abs().cast(pl.Float64)
         valid_mask = valid_mask & (diff <= float(self._tolerance))
 
         valid_mask = valid_mask & df["updated_at"].is_not_null()
 
-        valid_rows = df.filter(valid_mask)
+        valid_rows = df.filter(valid_mask).drop("_original_index")
         invalid_rows = df.filter(~valid_mask)
 
-        for idx, row in enumerate(invalid_rows.iter_rows(named=True)):
+        for row in invalid_rows.iter_rows(named=True):
+            original_idx = int(row["_original_index"])
             if not row.get("account_id"):
-                errors.append(ValidationError(idx, "account_id", "account_id is required"))
+                errors.append(ValidationError(original_idx, "account_id", "account_id is required"))
             if row.get("account_type") not in VALID_ACCOUNT_TYPES:
-                errors.append(ValidationError(idx, "account_type", f"Invalid account_type: {row.get('account_type')}", str(row.get("account_type"))))
+                errors.append(ValidationError(original_idx, "account_type", f"Invalid account_type: {row.get('account_type')}", str(row.get("account_type"))))
             if row.get("cash", 0) < 0:
-                errors.append(ValidationError(idx, "cash", "cash must be >= 0", str(row.get("cash"))))
+                errors.append(ValidationError(original_idx, "cash", "cash must be >= 0", str(row.get("cash"))))
             if row.get("frozen_cash", 0) < 0:
-                errors.append(ValidationError(idx, "frozen_cash", "frozen_cash must be >= 0", str(row.get("frozen_cash"))))
+                errors.append(ValidationError(original_idx, "frozen_cash", "frozen_cash must be >= 0", str(row.get("frozen_cash"))))
             if row.get("market_value", 0) < 0:
-                errors.append(ValidationError(idx, "market_value", "market_value must be >= 0", str(row.get("market_value"))))
+                errors.append(ValidationError(original_idx, "market_value", "market_value must be >= 0", str(row.get("market_value"))))
 
             cash = Decimal(str(row.get("cash", 0)))
             frozen = Decimal(str(row.get("frozen_cash", 0)))
@@ -119,12 +123,14 @@ class ValidatorService:
             if abs(total - calc_total) > self._tolerance:
                 errors.append(
                     ValidationError(
-                        idx,
+                        original_idx,
                         "total_asset",
                         f"total_asset mismatch: expected {calc_total}, got {total}",
                         str(total),
                     )
                 )
+
+        invalid_rows = invalid_rows.drop("_original_index")
 
         result = ValidationResult(
             is_valid=len(invalid_rows) == 0,
@@ -160,6 +166,9 @@ class ValidatorService:
         logger.info(f"Validating {len(df)} trade records")
         errors: list[ValidationError] = []
 
+        # Add original row index before filtering
+        df = df.with_row_index("_original_index")
+
         valid_mask = pl.lit(True)
 
         valid_mask = valid_mask & df["account_id"].is_not_null() & (df["account_id"].str.len_chars() > 0)
@@ -176,7 +185,7 @@ class ValidatorService:
         valid_mask = valid_mask & (df["traded_amount"] > 0)
 
         df_with_calc = df.with_columns((pl.col("traded_price") * pl.col("traded_volume")).alias("calc_amount"))
-        diff = (df_with_calc["traded_amount"] - df_with_calc["calc_amount"]).abs()
+        diff = (df_with_calc["traded_amount"] - df_with_calc["calc_amount"]).abs().cast(pl.Float64)
         valid_mask = valid_mask & (diff <= float(self._tolerance))
 
         valid_mask = valid_mask & df["traded_time"].is_not_null()
@@ -186,22 +195,23 @@ class ValidatorService:
         if valid_account_ids:
             valid_mask = valid_mask & df["account_id"].cast(pl.Utf8).is_in(list(valid_account_ids))
 
-        valid_rows = df.filter(valid_mask)
+        valid_rows = df.filter(valid_mask).drop("_original_index")
         invalid_rows = df.filter(~valid_mask)
 
-        for idx, row in enumerate(invalid_rows.iter_rows(named=True)):
+        for row in invalid_rows.iter_rows(named=True):
+            original_idx = int(row["_original_index"])
             if not row.get("traded_id"):
-                errors.append(ValidationError(idx, "traded_id", "traded_id is required"))
+                errors.append(ValidationError(original_idx, "traded_id", "traded_id is required"))
             if row.get("account_type") not in VALID_ACCOUNT_TYPES:
-                errors.append(ValidationError(idx, "account_type", f"Invalid account_type: {row.get('account_type')}", str(row.get("account_type"))))
+                errors.append(ValidationError(original_idx, "account_type", f"Invalid account_type: {row.get('account_type')}", str(row.get("account_type"))))
             if row.get("direction") not in VALID_DIRECTIONS:
-                errors.append(ValidationError(idx, "direction", f"Invalid direction: {row.get('direction')}", str(row.get("direction"))))
+                errors.append(ValidationError(original_idx, "direction", f"Invalid direction: {row.get('direction')}", str(row.get("direction"))))
             if row.get("offset_flag") not in VALID_OFFSET_FLAGS:
-                errors.append(ValidationError(idx, "offset_flag", f"Invalid offset_flag: {row.get('offset_flag')}", str(row.get("offset_flag"))))
+                errors.append(ValidationError(original_idx, "offset_flag", f"Invalid offset_flag: {row.get('offset_flag')}", str(row.get("offset_flag"))))
             if row.get("traded_price", 0) <= 0:
-                errors.append(ValidationError(idx, "traded_price", "traded_price must be > 0", str(row.get("traded_price"))))
+                errors.append(ValidationError(original_idx, "traded_price", "traded_price must be > 0", str(row.get("traded_price"))))
             if row.get("traded_volume", 0) <= 0:
-                errors.append(ValidationError(idx, "traded_volume", "traded_volume must be > 0", str(row.get("traded_volume"))))
+                errors.append(ValidationError(original_idx, "traded_volume", "traded_volume must be > 0", str(row.get("traded_volume"))))
 
             price = Decimal(str(row.get("traded_price", 0)))
             volume = int(row.get("traded_volume", 0))
@@ -210,7 +220,7 @@ class ValidatorService:
             if abs(amount - calc_amount) > self._tolerance:
                 errors.append(
                     ValidationError(
-                        idx,
+                        original_idx,
                         "traded_amount",
                         f"traded_amount mismatch: expected {calc_amount}, got {amount}",
                         str(amount),
@@ -220,12 +230,14 @@ class ValidatorService:
             if valid_account_ids and str(row.get("account_id")) not in valid_account_ids:
                 errors.append(
                     ValidationError(
-                        idx,
+                        original_idx,
                         "account_id",
                         f"account_id not found in asset table: {row.get('account_id')}",
                         str(row.get("account_id")),
                     )
                 )
+
+        invalid_rows = invalid_rows.drop("_original_index")
 
         result = ValidationResult(
             is_valid=len(invalid_rows) == 0,

@@ -25,10 +25,31 @@ pixi run ruff check src/ --fix  # Auto-fix issues
 pixi run pyright src/
 pixi run pyrefly check src/
 
-# Database migrations
+# Database migrations (dev environment)
 pixi run alembic upgrade head
 pixi run alembic revision --autogenerate -m "description"
+
+# Database migrations (test environment)
+ETL_ENV=test pixi run alembic upgrade head
 ```
+
+## Test Database Setup
+
+Test database setup is automated via Python. The test fixtures in `conftest.py` will automatically create the database if it doesn't exist.
+
+```bash
+# Option 1: Run via Python module directly
+pixi run python -m small_etl.data_access.db_setup
+
+# Option 2: Use in Python code
+from small_etl.data_access.db_setup import setup_test_database
+db_url = setup_test_database()  # Creates etl_test_db and tables
+
+# Option 3: Run Alembic migrations for test database
+ETL_ENV=test pixi run alembic upgrade head
+```
+
+**Prerequisites**: PostgreSQL must be running (via podman: `podman start postgres`)
 
 ## Architecture Overview
 

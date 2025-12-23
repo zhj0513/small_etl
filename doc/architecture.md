@@ -176,6 +176,9 @@ class Validator(Protocol):
   - 外键约束
   - 业务规则检查
 
+csv schema可参考@doc/env_doc/csv_schema.md
+业务规则可参考@doc/env_doc/validation_rules.md
+
 #### 3.1.3 Loader (加载器)
 
 **职责:**
@@ -207,15 +210,13 @@ class Loader(Protocol):
 class Asset(SQLModel, table=True):
     """资产表模型"""
     id: Optional[int] = Field(default=None, primary_key=True)
-    asset_id: str = Field(unique=True, index=True)
-    account_id: str = Field(index=True)
-    asset_type: str
-    quantity: Decimal = Field(max_digits=20, decimal_places=8)
-    value: Decimal = Field(max_digits=20, decimal_places=2)
-    currency: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    account_id: str = Field(unique=True, index=True, max_length=20)
+    account_type: int = Field(index=True)
+    cash: Decimal = Field(max_digits=20, decimal_places=2)
+    frozen_cash: Decimal = Field(max_digits=20, decimal_places=2)
+    market_value: Decimal = Field(max_digits=20, decimal_places=2)
+    total_asset: Decimal = Field(max_digits=20, decimal_places=2)
+    updated_at: datetime
 ```
 
 #### 3.2.2 Trade Model (交易表)
@@ -224,17 +225,20 @@ class Asset(SQLModel, table=True):
 class Trade(SQLModel, table=True):
     """交易表模型"""
     id: Optional[int] = Field(default=None, primary_key=True)
-    trade_id: str = Field(unique=True, index=True)
-    account_id: str = Field(index=True)
-    asset_id: str = Field(foreign_key="asset.asset_id")
-    trade_type: str  # buy, sell
-    quantity: Decimal = Field(max_digits=20, decimal_places=8)
-    price: Decimal = Field(max_digits=20, decimal_places=2)
-    amount: Decimal = Field(max_digits=20, decimal_places=2)
-    fee: Decimal = Field(max_digits=20, decimal_places=2, default=0)
-    currency: str
-    trade_time: datetime
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    account_id: str = Field(index=True, max_length=20, foreign_key="asset.account_id")
+    account_type: int = Field(index=True)
+    traded_id: str = Field(unique=True, index=True, max_length=50)
+    stock_code: str = Field(index=True, max_length=10)
+    traded_time: datetime
+    traded_price: Decimal = Field(max_digits=20, decimal_places=2)
+    traded_volume: int
+    traded_amount: Decimal = Field(max_digits=20, decimal_places=2)
+    strategy_name: str = Field(max_length=50)
+    order_remark: Optional[str] = Field(default=None, max_length=100)
+    direction: int
+    offset_flag: int
+    created_at: datetime
+    updated_at: datetime
 ```
 
 ### 3.3 配置管理架构
@@ -257,6 +261,8 @@ configs/
 └── logging/
     └── default.yaml     # 日志配置
 ```
+
+实际的服务环境配置可参考@doc/env_doc/environment_setup.md
 
 ## 4. 数据流设计
 

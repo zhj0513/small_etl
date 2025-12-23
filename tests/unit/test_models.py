@@ -1,6 +1,6 @@
 """Unit tests for domain models."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -78,7 +78,7 @@ class TestAssetModel:
             frozen_cash=frozen,
             market_value=market,
             total_asset=total,
-            updated_at=datetime.utcnow(),
+            updated_at=datetime.now(UTC),
         )
 
         assert asset.total_asset == total
@@ -126,15 +126,15 @@ class TestTradeModel:
             account_type=AccountType.SECURITY,
             traded_id="T20251222000001",
             stock_code="600000",
-            traded_time=datetime.utcnow(),
+            traded_time=datetime.now(UTC),
             traded_price=price,
             traded_volume=volume,
             traded_amount=amount,
             strategy_name="策略A",
             direction=Direction.NA,
             offset_flag=OffsetFlag.OPEN,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
 
         assert trade.traded_amount == amount
@@ -146,15 +146,15 @@ class TestTradeModel:
             account_type=AccountType.SECURITY,
             traded_id="T20251222000001",
             stock_code="600000",
-            traded_time=datetime.utcnow(),
+            traded_time=datetime.now(UTC),
             traded_price=Decimal("15.50"),
             traded_volume=1000,
             traded_amount=Decimal("15500.00"),
             strategy_name="策略A",
             direction=Direction.NA,
             offset_flag=OffsetFlag.OPEN,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
 
         assert trade.order_remark is None

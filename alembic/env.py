@@ -4,6 +4,8 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
+from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
 from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
@@ -18,11 +20,19 @@ target_metadata = SQLModel.metadata
 
 
 def get_url() -> str:
-    """Get database URL from environment or config."""
-    return os.getenv(
-        "DATABASE_URL",
-        config.get_main_option("sqlalchemy.url", "postgresql://postgres:postgres@localhost:5432/small_etl"),
-    )
+    """Get database URL from Hydra config or environment."""
+    if url := os.getenv("DATABASE_URL"):
+        return url
+
+    # 获取项目根目录下的 configs 路径
+    config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs")
+    env = os.getenv("ETL_ENV", "dev")
+
+    with initialize_config_dir(config_dir=config_dir, version_base=None):
+        cfg = compose(config_name="config", overrides=[f"db={env}"])
+        # 解析插值表达式
+        resolved = OmegaConf.to_container(cfg, resolve=True)
+        return resolved["db"]["url"]  # type: ignore[return-value]
 
 
 def run_migrations_offline() -> None:

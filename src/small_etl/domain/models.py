@@ -53,7 +53,7 @@ class Trade(SQLModel, table=True):
     """
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: str = Field(index=True, max_length=20)
+    account_id: str = Field(index=True, max_length=20, foreign_key="asset.account_id")
     account_type: int = Field(index=True)
     traded_id: str = Field(unique=True, index=True, max_length=50)
     stock_code: str = Field(index=True, max_length=10)

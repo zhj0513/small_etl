@@ -1,13 +1,75 @@
 """Test fixtures and configuration for Small ETL."""
 
+import os
 from datetime import datetime
 from decimal import Decimal
+from typing import Generator
 
 import polars as pl
 import pytest
+from sqlmodel import Session, create_engine
 
+from small_etl.data_access.db_setup import create_database_if_not_exists
 from small_etl.domain.enums import AccountType, Direction, OffsetFlag
 from small_etl.domain.models import Asset, Trade
+
+# Test database configuration
+TEST_DB_HOST = os.getenv("DB_HOST", "localhost")
+TEST_DB_PORT = int(os.getenv("DB_PORT", "15432"))
+TEST_DB_USER = os.getenv("DB_USER", "etl")
+TEST_DB_PASSWORD = os.getenv("DB_PASSWORD", "etlpass")
+TEST_DB_NAME = os.getenv("DB_NAME", "etl_test_db")
+
+TEST_DATABASE_URL = (
+    f"postgresql://{TEST_DB_USER}:{TEST_DB_PASSWORD}"
+    f"@{TEST_DB_HOST}:{TEST_DB_PORT}/{TEST_DB_NAME}"
+)
+
+
+@pytest.fixture(scope="session")
+def test_db_engine():
+    """Create test database engine.
+
+    This fixture ensures the test database exists and creates all tables.
+    Scope is 'session' to reuse across all tests.
+    """
+    from sqlmodel import SQLModel
+
+    # Create database if not exists
+    try:
+        create_database_if_not_exists(
+            host=TEST_DB_HOST,
+            port=TEST_DB_PORT,
+            user=TEST_DB_USER,
+            password=TEST_DB_PASSWORD,
+            database=TEST_DB_NAME,
+        )
+    except Exception:
+        # If we can't create the database, assume it exists or tests will fail later
+        pass
+
+    # Create the test engine
+    engine = create_engine(TEST_DATABASE_URL, echo=False)
+
+    # Create all tables
+    SQLModel.metadata.create_all(engine)
+
+    yield engine
+
+    # Cleanup: drop all tables after tests
+    SQLModel.metadata.drop_all(engine)
+    engine.dispose()
+
+
+@pytest.fixture
+def test_db_session(test_db_engine) -> Generator[Session, None, None]:
+    """Create a test database session.
+
+    Each test gets a fresh session with transaction rollback.
+    """
+    with Session(test_db_engine) as session:
+        yield session
+        session.rollback()
 
 
 @pytest.fixture

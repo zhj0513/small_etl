@@ -1,7 +1,7 @@
-db:
-  host: ${oc.env:DB_HOST,localhost}
-  port: ${oc.env:DB_PORT,5432}
-  database: ${oc.env:DB_NAME,small_etl_test}
-  user: ${oc.env:DB_USER,postgres}
-  password: ${oc.env:DB_PASSWORD,postgres}
-  url: postgresql://${db.user}:${db.password}@${db.host}:${db.port}/${db.database}
+host: ${oc.env:DB_HOST,localhost}
+port: ${oc.env:DB_PORT,15432}
+database: ${oc.env:DB_NAME,etl_test_db}
+user: ${oc.env:DB_USER,etl}
+password: ${oc.env:DB_PASSWORD,etlpass}
+url: postgresql://${db.user}:${db.password}@${db.host}:${db.port}/${db.database}
+echo: false

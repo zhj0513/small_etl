@@ -7,6 +7,9 @@ import polars as pl
 
 from small_etl.domain.enums import VALID_ACCOUNT_TYPES, VALID_DIRECTIONS, VALID_OFFSET_FLAGS
 
+# Default tolerance for calculated field comparisons
+DEFAULT_TOLERANCE = Decimal("0.01")
+
 
 class AssetSchema(pa.DataFrameModel):
     """Pandera schema for Asset data validation.
@@ -16,6 +19,7 @@ class AssetSchema(pa.DataFrameModel):
         - Decimal fields >= 0
         - Account type in valid enum range
         - Timestamp format
+        - total_asset = cash + frozen_cash + market_value (within tolerance)
     """
 
     id: int = pa.Field(ge=0)
@@ -33,6 +37,21 @@ class AssetSchema(pa.DataFrameModel):
         strict = True
         coerce = True
 
+    @pa.dataframe_check  # type: ignore[misc]
+    @staticmethod
+    def total_asset_equals_sum(df: pl.DataFrame) -> pl.Series:
+        """Check that total_asset = cash + frozen_cash + market_value (within tolerance).
+
+        Args:
+            df: DataFrame to validate.
+
+        Returns:
+            Boolean Series indicating which rows pass validation.
+        """
+        calc_total = df["cash"] + df["frozen_cash"] + df["market_value"]
+        diff = (df["total_asset"] - calc_total).abs()
+        return diff <= float(DEFAULT_TOLERANCE)
+
 
 class TradeSchema(pa.DataFrameModel):
     """Pandera schema for Trade data validation.
@@ -43,6 +62,7 @@ class TradeSchema(pa.DataFrameModel):
         - Volume > 0
         - Enum fields in valid ranges
         - Timestamp format
+        - traded_amount = traded_price * traded_volume (within tolerance)
     """
 
     id: int = pa.Field(ge=0)
@@ -66,3 +86,18 @@ class TradeSchema(pa.DataFrameModel):
 
         strict = True
         coerce = True
+
+    @pa.dataframe_check  # type: ignore[misc]
+    @staticmethod
+    def traded_amount_equals_product(df: pl.DataFrame) -> pl.Series:
+        """Check that traded_amount = traded_price * traded_volume (within tolerance).
+
+        Args:
+            df: DataFrame to validate.
+
+        Returns:
+            Boolean Series indicating which rows pass validation.
+        """
+        calc_amount = df["traded_price"] * df["traded_volume"]
+        diff = (df["traded_amount"] - calc_amount).abs()
+        return diff <= float(DEFAULT_TOLERANCE)
