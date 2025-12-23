@@ -1,7 +1,6 @@
 """Tests for loader service."""
 
 from datetime import datetime
-from decimal import Decimal
 from unittest.mock import MagicMock
 
 import polars as pl
@@ -20,9 +19,18 @@ class TestLoaderService:
         return MagicMock()
 
     @pytest.fixture
-    def loader(self, mock_repository):
-        """Create a LoaderService with mock repository."""
-        return LoaderService(mock_repository)
+    def mock_duckdb(self):
+        """Create a mock DuckDB client."""
+        return MagicMock()
+
+    @pytest.fixture
+    def loader(self, mock_repository, mock_duckdb):
+        """Create a LoaderService with mock repository and DuckDB client."""
+        return LoaderService(
+            repository=mock_repository,
+            duckdb_client=mock_duckdb,
+            database_url="postgresql://test:test@localhost/test",
+        )
 
     @pytest.fixture
     def sample_asset_df(self):
@@ -57,7 +65,7 @@ class TestLoaderService:
             "updated_at": [datetime(2025, 12, 22, 14, 30)],
         })
 
-    def test_load_assets_empty_dataframe(self, loader, mock_repository):
+    def test_load_assets_empty_dataframe(self, loader, mock_duckdb):
         """Test loading empty asset DataFrame."""
         empty_df = pl.DataFrame({
             "account_id": [],
@@ -74,9 +82,9 @@ class TestLoaderService:
         assert result.success is True
         assert result.total_rows == 0
         assert result.loaded_count == 0
-        mock_repository.upsert_assets.assert_not_called()
+        mock_duckdb.upsert_to_postgres.assert_not_called()
 
-    def test_load_trades_empty_dataframe(self, loader, mock_repository):
+    def test_load_trades_empty_dataframe(self, loader, mock_duckdb):
         """Test loading empty trade DataFrame."""
         empty_df = pl.DataFrame({
             "account_id": [],
@@ -100,11 +108,11 @@ class TestLoaderService:
         assert result.success is True
         assert result.total_rows == 0
         assert result.loaded_count == 0
-        mock_repository.upsert_trades.assert_not_called()
+        mock_duckdb.upsert_to_postgres.assert_not_called()
 
-    def test_load_assets_error(self, loader, mock_repository, sample_asset_df):
+    def test_load_assets_error(self, loader, mock_duckdb, sample_asset_df):
         """Test loading assets with error."""
-        mock_repository.upsert_assets.side_effect = Exception("Database error")
+        mock_duckdb.upsert_to_postgres.side_effect = Exception("Database error")
 
         result = loader.load_assets(sample_asset_df)
 
@@ -112,9 +120,9 @@ class TestLoaderService:
         assert result.error_message == "Database error"
         assert result.failed_count > 0
 
-    def test_load_trades_error(self, loader, mock_repository, sample_trade_df):
+    def test_load_trades_error(self, loader, mock_duckdb, sample_trade_df):
         """Test loading trades with error."""
-        mock_repository.upsert_trades.side_effect = Exception("Database error")
+        mock_duckdb.upsert_to_postgres.side_effect = Exception("Database error")
 
         result = loader.load_trades(sample_trade_df)
 
@@ -122,19 +130,19 @@ class TestLoaderService:
         assert result.error_message == "Database error"
         assert result.failed_count > 0
 
-    def test_load_assets_with_batching(self, loader, mock_repository, sample_asset_df):
+    def test_load_assets_with_batching(self, loader, mock_duckdb, sample_asset_df):
         """Test loading assets with small batch size."""
-        mock_repository.upsert_assets.return_value = 1
+        mock_duckdb.upsert_to_postgres.return_value = 1
 
         result = loader.load_assets(sample_asset_df, batch_size=1)
 
         assert result.success is True
         assert result.loaded_count == 2
-        assert mock_repository.upsert_assets.call_count == 2
+        assert mock_duckdb.upsert_to_postgres.call_count == 2
 
-    def test_load_trades_with_batching(self, loader, mock_repository, sample_trade_df):
+    def test_load_trades_with_batching(self, loader, mock_duckdb, sample_trade_df):
         """Test loading trades with small batch size."""
-        mock_repository.upsert_trades.return_value = 1
+        mock_duckdb.upsert_to_postgres.return_value = 1
 
         result = loader.load_trades(sample_trade_df, batch_size=1)
 

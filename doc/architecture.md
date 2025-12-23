@@ -430,7 +430,8 @@ class ExtractorService:
 ```
 
 **实现细节:**
-- 使用 DuckDB SQL 进行类型转换: `CAST(field AS DECIMAL(20,2))`
+- 用hydra管理来源csv格式定义和字段转换规则
+- 使用polars进行格式转换、字段转换的规则处理
 - 自动处理 CSV 编码和分隔符
 
 #### 3.3.2 ValidatorService (验证器)
@@ -496,6 +497,7 @@ class LoaderService:
 ```
 
 **实现细节:**
+- 使用duckdb的postgre插件把数据写到数据库
 - 使用 `df.slice()` 进行批次切分
 - 调用 `polars_to_assets()` / `polars_to_trades()` 转换
 - UPSERT 逻辑: 按主键查询，存在则更新，不存在则插入
@@ -534,6 +536,10 @@ class AnalyticsService:
     def asset_statistics(self, df: pl.DataFrame) -> AssetStatistics: ...
     def trade_statistics(self, df: pl.DataFrame) -> TradeStatistics: ...
 ```
+
+**实现细节:**
+- 用duckdb读取已入库的数据，再做简单的统计分析: 例如，账户资产平均值
+
 
 ### 3.4 数据模型设计
 

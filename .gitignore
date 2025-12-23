@@ -87,6 +87,12 @@ htmlcov/
 coverage.xml
 
 # =====================
+# Test databases (SQLite)
+# =====================
+*.db
+test_*.db
+
+# =====================
 # Docker
 # =====================
 docker-compose.override.yml

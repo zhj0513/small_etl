@@ -20,7 +20,76 @@ class DuckDBClient:
 
     def __init__(self) -> None:
         self._conn = duckdb.connect(":memory:")
+        self._pg_attached = False
         logger.info("DuckDBClient initialized with in-memory database")
+
+    def attach_postgres(self, database_url: str) -> None:
+        """Attach PostgreSQL database using DuckDB postgres extension.
+
+        Args:
+            database_url: PostgreSQL connection URL.
+        """
+        if self._pg_attached:
+            return
+
+        # Install and load postgres extension
+        self._conn.execute("INSTALL postgres")
+        self._conn.execute("LOAD postgres")
+
+        # Attach PostgreSQL database
+        self._conn.execute(f"ATTACH '{database_url}' AS pg (TYPE POSTGRES)")
+        self._pg_attached = True
+        logger.info("PostgreSQL database attached via DuckDB postgres extension")
+
+    def upsert_to_postgres(self, df: pl.DataFrame, table_name: str, conflict_column: str) -> int:
+        """Upsert DataFrame to PostgreSQL table using DuckDB postgres extension.
+
+        Uses INSERT ... ON CONFLICT DO UPDATE for efficient bulk upsert.
+
+        Args:
+            df: Polars DataFrame to upsert.
+            table_name: Target PostgreSQL table name.
+            conflict_column: Column name for conflict detection (primary key).
+
+        Returns:
+            Number of rows upserted.
+        """
+        if df.is_empty():
+            return 0
+
+        if not self._pg_attached:
+            raise RuntimeError("PostgreSQL not attached. Call attach_postgres() first.")
+
+        # Register DataFrame as a DuckDB table
+        temp_table = f"_temp_{table_name}"
+        self._conn.register(temp_table, df.to_arrow())
+
+        # Get column names excluding the conflict column for UPDATE SET clause
+        columns = df.columns
+        update_columns = [c for c in columns if c != conflict_column]
+
+        # Build column list for INSERT
+        columns_str = ", ".join(columns)
+        values_str = ", ".join([f'"{c}"' for c in columns])
+
+        # Build UPDATE SET clause
+        update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_columns])
+
+        # Execute upsert using INSERT ... ON CONFLICT
+        sql = f"""
+            INSERT INTO pg.{table_name} ({columns_str})
+            SELECT {values_str} FROM {temp_table}
+            ON CONFLICT ({conflict_column}) DO UPDATE SET {update_set}
+        """
+
+        self._conn.execute(sql)
+
+        # Unregister temp table
+        self._conn.unregister(temp_table)
+
+        row_count = len(df)
+        logger.info(f"Upserted {row_count} rows to pg.{table_name}")
+        return row_count
 
     def load_csv_bytes(self, csv_bytes: bytes, table_name: str) -> None:
         """Load CSV data from bytes into a DuckDB table.

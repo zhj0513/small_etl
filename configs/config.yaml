@@ -3,6 +3,7 @@ defaults:
   - s3: dev
   - etl: default
   - scheduler: default
+  - extractor: default
   - _self_
 
 app:

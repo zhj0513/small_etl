@@ -1,11 +1,16 @@
 """Analytics service for data statistics."""
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
+
+if TYPE_CHECKING:
+    from small_etl.data_access.postgres_repository import PostgresRepository
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +66,15 @@ class TradeStatistics:
 
 
 class AnalyticsService:
-    """Service for computing data statistics."""
+    """Service for computing data statistics.
+
+    Args:
+        repository: Optional PostgresRepository for database queries.
+                   If provided, enables statistics from database.
+    """
+
+    def __init__(self, repository: PostgresRepository | None = None) -> None:
+        self._repo = repository
 
     def asset_statistics(self, df: pl.DataFrame) -> AssetStatistics:
         """Compute statistics for asset data.
@@ -203,3 +216,33 @@ class AnalyticsService:
             by_offset_flag=by_offset_flag,
             by_strategy=by_strategy,
         )
+
+    def asset_statistics_from_db(self) -> AssetStatistics:
+        """Compute statistics from database records.
+
+        Returns:
+            AssetStatistics computed from database.
+
+        Raises:
+            ValueError: If repository is not configured.
+        """
+        if self._repo is None:
+            raise ValueError("Repository not configured for database statistics")
+
+        df = self._repo.get_all_assets()
+        return self.asset_statistics(df)
+
+    def trade_statistics_from_db(self) -> TradeStatistics:
+        """Compute statistics from database records.
+
+        Returns:
+            TradeStatistics computed from database.
+
+        Raises:
+            ValueError: If repository is not configured.
+        """
+        if self._repo is None:
+            raise ValueError("Repository not configured for database statistics")
+
+        df = self._repo.get_all_trades()
+        return self.trade_statistics(df)

@@ -179,6 +179,96 @@ class PostgresRepository:
         self._engine.dispose()
         logger.info("PostgresRepository connection closed")
 
+    def get_all_assets(self) -> pl.DataFrame:
+        """Get all asset records as Polars DataFrame.
+
+        Returns:
+            Polars DataFrame with all asset data.
+        """
+        with Session(self._engine) as session:
+            result = session.exec(select(Asset))
+            assets = result.all()
+
+            if not assets:
+                return pl.DataFrame(
+                    schema={
+                        "id": pl.Int64,
+                        "account_id": pl.Utf8,
+                        "account_type": pl.Int32,
+                        "cash": pl.Float64,
+                        "frozen_cash": pl.Float64,
+                        "market_value": pl.Float64,
+                        "total_asset": pl.Float64,
+                        "updated_at": pl.Datetime,
+                    }
+                )
+
+            return pl.DataFrame([
+                {
+                    "id": a.id,
+                    "account_id": a.account_id,
+                    "account_type": a.account_type,
+                    "cash": float(a.cash),
+                    "frozen_cash": float(a.frozen_cash),
+                    "market_value": float(a.market_value),
+                    "total_asset": float(a.total_asset),
+                    "updated_at": a.updated_at,
+                }
+                for a in assets
+            ])
+
+    def get_all_trades(self) -> pl.DataFrame:
+        """Get all trade records as Polars DataFrame.
+
+        Returns:
+            Polars DataFrame with all trade data.
+        """
+        with Session(self._engine) as session:
+            result = session.exec(select(Trade))
+            trades = result.all()
+
+            if not trades:
+                return pl.DataFrame(
+                    schema={
+                        "id": pl.Int64,
+                        "account_id": pl.Utf8,
+                        "account_type": pl.Int32,
+                        "traded_id": pl.Utf8,
+                        "stock_code": pl.Utf8,
+                        "traded_time": pl.Datetime,
+                        "traded_price": pl.Float64,
+                        "traded_volume": pl.Int64,
+                        "traded_amount": pl.Float64,
+                        "strategy_name": pl.Utf8,
+                        "order_remark": pl.Utf8,
+                        "direction": pl.Int32,
+                        "offset_flag": pl.Int32,
+                        "created_at": pl.Datetime,
+                        "updated_at": pl.Datetime,
+                    }
+                )
+
+            return pl.DataFrame([
+                {
+                    "id": t.id,
+                    "account_id": t.account_id,
+                    "account_type": t.account_type,
+                    "traded_id": t.traded_id,
+                    "stock_code": t.stock_code,
+                    "traded_time": t.traded_time,
+                    "traded_price": float(t.traded_price),
+                    "traded_volume": t.traded_volume,
+                    "traded_amount": float(t.traded_amount),
+                    "strategy_name": t.strategy_name,
+                    "order_remark": t.order_remark,
+                    "direction": t.direction,
+                    "offset_flag": t.offset_flag,
+                    "created_at": t.created_at,
+                    "updated_at": t.updated_at,
+                }
+                for t in trades
+            ])
+
 
 def polars_to_assets(df: pl.DataFrame) -> list[Asset]:
     """Convert Polars DataFrame to list of Asset instances.

@@ -1,0 +1,110 @@
+# ExtractorService CSV format configuration
+# Defines column mappings and data type conversions for assets and trades
+
+assets:
+  columns:
+    - name: id
+      csv_name: id
+      dtype: Int64
+      nullable: true
+    - name: account_id
+      csv_name: account_id
+      dtype: Utf8
+      nullable: false
+    - name: account_type
+      csv_name: account_type
+      dtype: Int32
+      nullable: false
+    - name: cash
+      csv_name: cash
+      dtype: Float64
+      nullable: false
+    - name: frozen_cash
+      csv_name: frozen_cash
+      dtype: Float64
+      nullable: false
+    - name: market_value
+      csv_name: market_value
+      dtype: Float64
+      nullable: false
+    - name: total_asset
+      csv_name: total_asset
+      dtype: Float64
+      nullable: false
+    - name: updated_at
+      csv_name: updated_at
+      dtype: Datetime
+      format: "%Y-%m-%dT%H:%M:%S"
+      nullable: false
+
+trades:
+  columns:
+    - name: id
+      csv_name: id
+      dtype: Int64
+      nullable: true
+    - name: account_id
+      csv_name: account_id
+      dtype: Utf8
+      nullable: false
+    - name: account_type
+      csv_name: account_type
+      dtype: Int32
+      nullable: false
+    - name: traded_id
+      csv_name: traded_id
+      dtype: Utf8
+      nullable: false
+    - name: stock_code
+      csv_name: stock_code
+      dtype: Utf8
+      nullable: false
+    - name: traded_time
+      csv_name: traded_time
+      dtype: Datetime
+      format: "%Y-%m-%dT%H:%M:%S"
+      nullable: false
+    - name: traded_price
+      csv_name: traded_price
+      dtype: Float64
+      nullable: false
+    - name: traded_volume
+      csv_name: traded_volume
+      dtype: Int64
+      nullable: false
+    - name: traded_amount
+      csv_name: traded_amount
+      dtype: Float64
+      nullable: false
+    - name: strategy_name
+      csv_name: strategy_name
+      dtype: Utf8
+      nullable: false
+    - name: order_remark
+      csv_name: order_remark
+      dtype: Utf8
+      nullable: true
+    - name: direction
+      csv_name: direction
+      dtype: Int32
+      nullable: false
+    - name: offset_flag
+      csv_name: offset_flag
+      dtype: Int32
+      nullable: false
+    - name: created_at
+      csv_name: created_at
+      dtype: Datetime
+      format: "%Y-%m-%dT%H:%M:%S"
+      nullable: false
+    - name: updated_at
+      csv_name: updated_at
+      dtype: Datetime
+      format: "%Y-%m-%dT%H:%M:%S"
+      nullable: false
+
+csv_options:
+  delimiter: ","
+  has_header: true
+  encoding: "utf-8"
+  null_values: ["", "NULL", "null", "None"]

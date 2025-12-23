@@ -51,7 +51,7 @@ class TestETLScheduler:
                 "jobs": [],
             },
             "db": {
-                "url": "sqlite:///test_scheduler.db",  # Use SQLite for unit tests
+                "url": "postgresql://etl:etlpass@localhost:15432/etl_test_db",
             },
             "s3": {
                 "bucket": "test-bucket",
@@ -345,7 +345,7 @@ class TestSchedulerCLI:
                 "jobs": [],
             },
             "db": {
-                "url": "sqlite:///test_scheduler_cli.db",
+                "url": "postgresql://etl:etlpass@localhost:15432/etl_test_db",
             },
             "s3": {
                 "bucket": "test-bucket",
@@ -392,9 +392,13 @@ class TestSchedulerCLI:
         import logging
 
         from small_etl.cli import EXIT_SUCCESS, run_schedule
+        from small_etl.scheduler.scheduler import ETLScheduler
 
-        # Use a fresh database to ensure no jobs exist
-        config["db"]["url"] = "sqlite:///test_scheduler_list_empty.db"
+        # Clear all existing jobs to ensure empty state
+        scheduler = ETLScheduler(config, blocking=False)
+        for job in scheduler.list_jobs():
+            scheduler.remove_job(job.job_id)
+        scheduler.shutdown(wait=False)
 
         args = argparse.Namespace(
             schedule_command="list",

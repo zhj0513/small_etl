@@ -71,3 +71,18 @@ class TestDuckDBClient:
 
         assert len(df) == 2
         assert df["updated_at"].dtype == pl.Datetime
+
+    def test_upsert_to_postgres_empty_df(self, client: DuckDBClient) -> None:
+        """Test upsert_to_postgres with empty DataFrame returns 0."""
+        empty_df = pl.DataFrame({"id": [], "name": []})
+
+        result = client.upsert_to_postgres(empty_df, "test_table", "id")
+
+        assert result == 0
+
+    def test_upsert_to_postgres_without_attach_raises(self, client: DuckDBClient) -> None:
+        """Test upsert_to_postgres without attach_postgres raises error."""
+        df = pl.DataFrame({"id": [1], "name": ["test"]})
+
+        with pytest.raises(RuntimeError, match="PostgreSQL not attached"):
+            client.upsert_to_postgres(df, "test_table", "id")

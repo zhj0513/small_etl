@@ -80,10 +80,16 @@ class ETLPipeline:
         echo = getattr(config.db, "echo", False)
         self._repo = PostgresRepository(config.db.url, echo=echo)
 
-        self._extractor = ExtractorService(self._s3, self._duckdb)
+        self._extractor = ExtractorService(
+            self._s3, self._duckdb, config=getattr(config, "extractor", None)
+        )
         self._validator = ValidatorService(tolerance=config.etl.validation.tolerance)
-        self._loader = LoaderService(self._repo)
-        self._analytics = AnalyticsService()
+        self._loader = LoaderService(
+            repository=self._repo,
+            duckdb_client=self._duckdb,
+            database_url=config.db.url,
+        )
+        self._analytics = AnalyticsService(repository=self._repo)
 
         logger.info("ETLPipeline initialized")
 
@@ -142,9 +148,9 @@ class ETLPipeline:
             if not trades_load.success:
                 raise RuntimeError(f"Trade loading failed: {trades_load.error_message}")
 
-            logger.info("=== Phase 7: Compute Analytics ===")
-            assets_stats = self._analytics.asset_statistics(assets_validation.valid_rows)
-            trades_stats = self._analytics.trade_statistics(trades_validation.valid_rows)
+            logger.info("=== Phase 7: Compute Analytics from Database ===")
+            assets_stats = self._analytics.asset_statistics_from_db()
+            trades_stats = self._analytics.trade_statistics_from_db()
 
             completed_at = _utc_now()
             duration = (completed_at - started_at).total_seconds()
@@ -193,7 +199,7 @@ class ETLPipeline:
                 batch_size=self._config.etl.batch_size,
             )
 
-            assets_stats = self._analytics.asset_statistics(assets_validation.valid_rows)
+            assets_stats = self._analytics.asset_statistics_from_db()
 
             return PipelineResult(
                 success=assets_load.success,
@@ -241,7 +247,7 @@ class ETLPipeline:
                 batch_size=self._config.etl.batch_size,
             )
 
-            trades_stats = self._analytics.trade_statistics(trades_validation.valid_rows)
+            trades_stats = self._analytics.trade_statistics_from_db()
 
             return PipelineResult(
                 success=trades_load.success,

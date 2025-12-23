@@ -14,13 +14,15 @@
 - 使用场景：测试和优化 ETL 管道
 
 ## 核心功能
-1. 数据提取：从 S3 CSV 文件读取数据
-2. 数据验证：用 DuckDB 验证字段和数据完整性
-3. 数据入库：同步写入 PostgreSQL
-4. 数据分析：简单统计分析（总数、均值等）
-5. Schema 管理：SQLModel + Alembic
-6. 配置管理：Hydra + pyproject.toml + pixi
-7. 自动化测试：pytest 管理单元测试和集成测试
+1. 数据提取：从 S3 CSV 文件读取数据（支持 Hydra 配置驱动的格式转换）
+2. 数据验证：用 DuckDB + Pandera 进行字段级和业务规则验证
+3. 数据入库：批量 UPSERT 到 PostgreSQL（使用 DuckDB PostgreSQL 插件）
+4. 数据分析：用 DuckDB 读取已入库数据进行统计分析
+5. 命令行界面：argparse 支持 run/assets/trades/clean/schedule 命令
+6. 定时任务管理：APScheduler 支持周期性 ETL 执行（PostgreSQL 持久化）
+7. Schema 管理：SQLModel + Alembic
+8. 配置管理：Hydra + pyproject.toml + pixi
+9. 自动化测试：pytest 管理单元测试和集成测试
 
 ## 明确不做
 - 不处理高频交易和实时流数据

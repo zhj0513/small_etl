@@ -9,14 +9,17 @@
 - Schema 管理：Alembic
 - 配置管理：Hydra
 - 包管理：pixi
+- CLI：argparse（标准库命令行解析）
+- 任务调度：APScheduler（定时任务管理，PostgreSQL 持久化）
 - 静态检查：pyright, pyrefly, ruff
 - 测试框架：pytest
 
 ## 数据管道
 - CSV 数据来源：S3（可通过 MinIO 模拟）
-- 数据验证：DuckDB 导入并使用pandera进行字段级校验
-- 数据写入：DuckDB PostgreSQL 插件同步写入
-- 数据分析：DuckDB 简单统计分析
+- 数据提取：ExtractorService 用 Hydra 管理 CSV 格式定义，使用 Polars 进行格式转换
+- 数据验证：DuckDB 导入 + Pandera 进行字段级和业务规则校验
+- 数据写入：LoaderService 使用 DuckDB 的 PostgreSQL 插件进行批量 UPSERT
+- 数据分析：AnalyticsService 用 DuckDB 读取已入库数据进行统计分析
 
 ## 必须遵守的约束
 - 资产表、交易表必须用 SQLModel 定义
