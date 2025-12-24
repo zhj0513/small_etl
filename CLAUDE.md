@@ -8,6 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install dependencies
 pixi install
 
+# Run all tests
+pixi run pytest tests/ -v --cov=src/small_etl
+
 # Run all unit tests
 pixi run pytest tests/unit/ -v --no-cov
 

@@ -824,3 +824,681 @@ class TestRunPipeline:
             result = run_pipeline(args)
 
         assert result == EXIT_ARGS_ERROR
+
+    def test_run_pipeline_trades_validation_errors(self):
+        """Test run_pipeline returns validation error when trades have errors."""
+        args = argparse.Namespace(
+            command="run",
+            env="dev",
+            verbose=False,
+            dry_run=False,
+            batch_size=None,
+            s3_endpoint=None,
+            s3_bucket=None,
+            assets_file=None,
+            trades_file=None,
+            db_host=None,
+            db_port=None,
+            db_name=None,
+            db_user=None,
+            db_password=None,
+        )
+
+        mock_validation = MagicMock()
+        mock_validation.invalid_count = 3
+        mock_validation.total_rows = 50
+        mock_validation.valid_count = 47
+        mock_validation.errors = []
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.assets_validation = None
+        mock_result.trades_validation = mock_validation
+        mock_result.started_at = datetime.now(UTC)
+        mock_result.completed_at = datetime.now(UTC)
+        mock_result.assets_load = None
+        mock_result.trades_load = None
+        mock_result.assets_stats = None
+        mock_result.trades_stats = None
+        mock_result.error_message = None
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.return_value = mock_result
+        mock_pipeline.__enter__ = MagicMock(return_value=mock_pipeline)
+        mock_pipeline.__exit__ = MagicMock(return_value=False)
+
+        with patch("small_etl.cli.ETLPipeline", return_value=mock_pipeline):
+            result = run_pipeline(args)
+
+        assert result == EXIT_VALIDATION_ERROR
+
+    def test_run_pipeline_schedule_command(self):
+        """Test run_pipeline with schedule command."""
+        args = argparse.Namespace(
+            command="schedule",
+            schedule_command="list",
+            env="dev",
+            verbose=False,
+            db_host=None,
+            db_port=None,
+            db_name=None,
+            db_user=None,
+            db_password=None,
+        )
+
+        with patch("small_etl.cli.run_schedule", return_value=EXIT_SUCCESS) as mock_schedule:
+            result = run_pipeline(args)
+
+        assert result == EXIT_SUCCESS
+        mock_schedule.assert_called_once()
+
+
+class TestRunDry:
+    """Tests for _run_dry function."""
+
+    def test_run_dry_run_command(self):
+        """Test _run_dry with run command (assets + trades)."""
+        from small_etl.cli import _run_dry
+
+        import polars as pl
+
+        mock_pipeline = MagicMock()
+        mock_extractor = MagicMock()
+        mock_validator = MagicMock()
+
+        mock_pipeline._extractor = mock_extractor
+        mock_pipeline._validator = mock_validator
+
+        mock_extractor.extract_assets.return_value = pl.DataFrame({"account_id": ["001"]})
+        mock_extractor.extract_trades.return_value = pl.DataFrame({"traded_id": ["T001"]})
+
+        mock_assets_validation = MagicMock()
+        mock_trades_validation = MagicMock()
+        mock_validator.validate_assets.return_value = mock_assets_validation
+        mock_validator.validate_trades.return_value = mock_trades_validation
+
+        config = {
+            "s3": {"bucket": "test-bucket", "assets_file": "assets.csv", "trades_file": "trades.csv"}
+        }
+
+        result = _run_dry(mock_pipeline, "run", config)
+
+        assert result.success is True
+        assert result.assets_validation == mock_assets_validation
+        assert result.trades_validation == mock_trades_validation
+        mock_extractor.extract_assets.assert_called_once()
+        mock_extractor.extract_trades.assert_called_once()
+
+    def test_run_dry_assets_command(self):
+        """Test _run_dry with assets command."""
+        from small_etl.cli import _run_dry
+
+        import polars as pl
+
+        mock_pipeline = MagicMock()
+        mock_extractor = MagicMock()
+        mock_validator = MagicMock()
+
+        mock_pipeline._extractor = mock_extractor
+        mock_pipeline._validator = mock_validator
+
+        mock_extractor.extract_assets.return_value = pl.DataFrame({"account_id": ["001"]})
+        mock_assets_validation = MagicMock()
+        mock_validator.validate_assets.return_value = mock_assets_validation
+
+        config = {
+            "s3": {"bucket": "test-bucket", "assets_file": "assets.csv", "trades_file": "trades.csv"}
+        }
+
+        result = _run_dry(mock_pipeline, "assets", config)
+
+        assert result.success is True
+        assert result.assets_validation == mock_assets_validation
+        mock_extractor.extract_assets.assert_called_once()
+        mock_extractor.extract_trades.assert_not_called()
+
+    def test_run_dry_trades_command(self):
+        """Test _run_dry with trades command."""
+        from small_etl.cli import _run_dry
+
+        import polars as pl
+
+        mock_pipeline = MagicMock()
+        mock_extractor = MagicMock()
+        mock_validator = MagicMock()
+
+        mock_pipeline._extractor = mock_extractor
+        mock_pipeline._validator = mock_validator
+
+        mock_extractor.extract_trades.return_value = pl.DataFrame({"traded_id": ["T001"]})
+        mock_trades_validation = MagicMock()
+        mock_validator.validate_trades.return_value = mock_trades_validation
+
+        config = {
+            "s3": {"bucket": "test-bucket", "assets_file": "assets.csv", "trades_file": "trades.csv"}
+        }
+
+        result = _run_dry(mock_pipeline, "trades", config)
+
+        assert result.success is True
+        assert result.trades_validation == mock_trades_validation
+        mock_extractor.extract_trades.assert_called_once()
+        mock_extractor.extract_assets.assert_not_called()
+
+    def test_run_dry_exception(self):
+        """Test _run_dry handles exceptions."""
+        from small_etl.cli import _run_dry
+
+        mock_pipeline = MagicMock()
+        mock_extractor = MagicMock()
+        mock_pipeline._extractor = mock_extractor
+        mock_extractor.extract_assets.side_effect = Exception("S3 error")
+
+        config = {
+            "s3": {"bucket": "test-bucket", "assets_file": "assets.csv", "trades_file": "trades.csv"}
+        }
+
+        result = _run_dry(mock_pipeline, "run", config)
+
+        assert result.success is False
+        assert "S3 error" in result.error_message
+
+
+class TestGetConfigDirFallback:
+    """Tests for get_config_dir fallback behavior."""
+
+    def test_get_config_dir_fallback_to_cwd(self):
+        """Test get_config_dir falls back to cwd."""
+        from pathlib import Path
+
+        from small_etl.cli import get_config_dir
+
+        # The normal case should return the project configs directory
+        config_dir = get_config_dir()
+        assert config_dir.exists()
+        assert config_dir.name == "configs"
+
+    def test_get_config_dir_not_found(self):
+        """Test get_config_dir raises FileNotFoundError when no configs found."""
+        from pathlib import Path
+        from unittest.mock import PropertyMock
+
+        # This tests the edge case where neither path exists
+        with patch("pathlib.Path.exists", return_value=False):
+            with pytest.raises(FileNotFoundError, match="Cannot find configs directory"):
+                get_config_dir()
+
+
+class TestPrintResultTradesValidation:
+    """Tests for print_result with trades validation."""
+
+    def test_print_result_with_trades_validation(self, capsys):
+        """Test printing result with trades validation."""
+        from small_etl.application.pipeline import PipelineResult
+        from small_etl.services.validator import ValidationResult
+
+        import polars as pl
+
+        trades_validation = ValidationResult(
+            is_valid=True,
+            valid_rows=pl.DataFrame(),
+            invalid_rows=pl.DataFrame(),
+            errors=[],
+            total_rows=50,
+            valid_count=48,
+            invalid_count=2,
+        )
+
+        result = PipelineResult(
+            success=True,
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            trades_validation=trades_validation,
+        )
+        print_result(result)
+
+        captured = capsys.readouterr()
+        assert "Trades Validation" in captured.out
+        assert "50" in captured.out
+
+    def test_print_result_with_trades_load(self, capsys):
+        """Test printing result with trades load result."""
+        from small_etl.application.pipeline import PipelineResult
+        from small_etl.services.loader import LoadResult
+
+        trades_load = LoadResult(
+            success=True,
+            total_rows=50,
+            loaded_count=50,
+        )
+
+        result = PipelineResult(
+            success=True,
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            trades_load=trades_load,
+        )
+        print_result(result)
+
+        captured = capsys.readouterr()
+        assert "Trades Load" in captured.out
+        assert "50" in captured.out
+
+    def test_print_result_verbose_with_trades_validation_errors(self, capsys):
+        """Test printing result with verbose trades validation errors."""
+        from small_etl.application.pipeline import PipelineResult
+        from small_etl.services.validator import ValidationError, ValidationResult
+
+        import polars as pl
+
+        errors = [
+            ValidationError(row_index=1, field="traded_price", message="Zero price", value="0"),
+            ValidationError(row_index=2, field="traded_amount", message="Mismatch", value="999"),
+        ]
+
+        trades_validation = ValidationResult(
+            is_valid=False,
+            valid_rows=pl.DataFrame(),
+            invalid_rows=pl.DataFrame(),
+            errors=errors,
+            total_rows=50,
+            valid_count=48,
+            invalid_count=2,
+        )
+
+        result = PipelineResult(
+            success=True,
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            trades_validation=trades_validation,
+        )
+        print_result(result, verbose=True)
+
+        captured = capsys.readouterr()
+        assert "Errors" in captured.out
+        assert "traded_price" in captured.out
+
+
+class TestParseArgsSchedule:
+    """Tests for parse_args with schedule commands."""
+
+    def test_parse_schedule_start(self):
+        """Test parsing schedule start command."""
+        args = parse_args(["schedule", "start"])
+        assert args.command == "schedule"
+        assert args.schedule_command == "start"
+
+    def test_parse_schedule_add(self):
+        """Test parsing schedule add command."""
+        args = parse_args([
+            "schedule", "add",
+            "--job-id", "daily-etl",
+            "--etl-command", "run",
+            "--interval", "day",
+            "--at", "02:00",
+        ])
+        assert args.command == "schedule"
+        assert args.schedule_command == "add"
+        assert args.job_id == "daily-etl"
+        assert args.etl_command == "run"
+        assert args.interval == "day"
+        assert getattr(args, "at") == "02:00"
+
+    def test_parse_schedule_list(self):
+        """Test parsing schedule list command."""
+        args = parse_args(["schedule", "list"])
+        assert args.command == "schedule"
+        assert args.schedule_command == "list"
+
+    def test_parse_schedule_remove(self):
+        """Test parsing schedule remove command."""
+        args = parse_args(["schedule", "remove", "--job-id", "daily-etl"])
+        assert args.command == "schedule"
+        assert args.schedule_command == "remove"
+        assert args.job_id == "daily-etl"
+
+    def test_parse_schedule_pause(self):
+        """Test parsing schedule pause command."""
+        args = parse_args(["schedule", "pause", "--job-id", "daily-etl"])
+        assert args.command == "schedule"
+        assert args.schedule_command == "pause"
+        assert args.job_id == "daily-etl"
+
+    def test_parse_schedule_resume(self):
+        """Test parsing schedule resume command."""
+        args = parse_args(["schedule", "resume", "--job-id", "daily-etl"])
+        assert args.command == "schedule"
+        assert args.schedule_command == "resume"
+        assert args.job_id == "daily-etl"
+
+
+class TestRunSchedule:
+    """Tests for run_schedule function."""
+
+    def test_run_schedule_no_command(self, capsys):
+        """Test run_schedule with no schedule command."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(schedule_command=None)
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule")
+
+        result = run_schedule(args, config, logger)
+
+        assert result == EXIT_ARGS_ERROR
+        captured = capsys.readouterr()
+        assert "Please specify" in captured.out
+
+    def test_run_schedule_list(self, capsys):
+        """Test run_schedule list command."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(schedule_command="list", env="dev", verbose=False)
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_list")
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.list_jobs.return_value = []
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_SUCCESS
+        captured = capsys.readouterr()
+        assert "Scheduled Jobs" in captured.out
+
+    def test_run_schedule_list_with_jobs(self, capsys):
+        """Test run_schedule list command with jobs."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(schedule_command="list", env="dev", verbose=False)
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_list")
+
+        mock_job = MagicMock()
+        mock_job.job_id = "daily-etl"
+        mock_job.command = "run"
+        mock_job.interval = "day"
+        mock_job.at_time = "02:00"
+        mock_job.enabled = True
+        mock_job.last_run = None
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.list_jobs.return_value = [mock_job]
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_SUCCESS
+        captured = capsys.readouterr()
+        assert "daily-etl" in captured.out
+
+    def test_run_schedule_add(self, capsys):
+        """Test run_schedule add command."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(
+            schedule_command="add",
+            env="dev",
+            verbose=False,
+            job_id="daily-etl",
+            etl_command="run",
+            interval="day",
+            at="02:00",
+        )
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_add")
+
+        mock_job = MagicMock()
+        mock_job.job_id = "daily-etl"
+        mock_job.command = "run"
+        mock_job.interval = "day"
+        mock_job.at_time = "02:00"
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.add_job.return_value = mock_job
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_SUCCESS
+        captured = capsys.readouterr()
+        assert "Job Added" in captured.out
+
+    def test_run_schedule_remove_success(self, capsys):
+        """Test run_schedule remove command success."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(
+            schedule_command="remove",
+            env="dev",
+            verbose=False,
+            job_id="daily-etl",
+        )
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_remove")
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.remove_job.return_value = True
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_SUCCESS
+        captured = capsys.readouterr()
+        assert "removed successfully" in captured.out
+
+    def test_run_schedule_remove_not_found(self, capsys):
+        """Test run_schedule remove command when job not found."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(
+            schedule_command="remove",
+            env="dev",
+            verbose=False,
+            job_id="nonexistent",
+        )
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_remove")
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.remove_job.return_value = False
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_ERROR
+        captured = capsys.readouterr()
+        assert "not found" in captured.out
+
+    def test_run_schedule_pause_success(self, capsys):
+        """Test run_schedule pause command success."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(
+            schedule_command="pause",
+            env="dev",
+            verbose=False,
+            job_id="daily-etl",
+        )
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_pause")
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.pause_job.return_value = True
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_SUCCESS
+        captured = capsys.readouterr()
+        assert "paused successfully" in captured.out
+
+    def test_run_schedule_pause_not_found(self):
+        """Test run_schedule pause command when job not found."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(
+            schedule_command="pause",
+            env="dev",
+            verbose=False,
+            job_id="nonexistent",
+        )
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_pause")
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.pause_job.return_value = False
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_ERROR
+
+    def test_run_schedule_resume_success(self, capsys):
+        """Test run_schedule resume command success."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(
+            schedule_command="resume",
+            env="dev",
+            verbose=False,
+            job_id="daily-etl",
+        )
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_resume")
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.resume_job.return_value = True
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_SUCCESS
+        captured = capsys.readouterr()
+        assert "resumed successfully" in captured.out
+
+    def test_run_schedule_resume_not_found(self):
+        """Test run_schedule resume command when job not found."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(
+            schedule_command="resume",
+            env="dev",
+            verbose=False,
+            job_id="nonexistent",
+        )
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_resume")
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.resume_job.return_value = False
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_ERROR
+
+    def test_run_schedule_unknown_command(self):
+        """Test run_schedule with unknown schedule command."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(
+            schedule_command="unknown",
+            env="dev",
+            verbose=False,
+        )
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_unknown")
+
+        mock_scheduler = MagicMock()
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_ARGS_ERROR
+
+    def test_run_schedule_value_error(self):
+        """Test run_schedule handles ValueError."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(
+            schedule_command="add",
+            env="dev",
+            verbose=False,
+            job_id="daily-etl",
+            etl_command="run",
+            interval="invalid",
+            at=None,
+        )
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_error")
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.add_job.side_effect = ValueError("Invalid interval")
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", return_value=mock_scheduler):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_ARGS_ERROR
+
+    def test_run_schedule_exception(self):
+        """Test run_schedule handles general exceptions."""
+        from small_etl.cli import run_schedule
+
+        import logging
+
+        args = argparse.Namespace(
+            schedule_command="list",
+            env="dev",
+            verbose=False,
+        )
+        config = {"db": {"url": "postgresql://test:test@localhost/test"}}
+        logger = logging.getLogger("test_schedule_exception")
+
+        with patch("small_etl.scheduler.scheduler.ETLScheduler", side_effect=Exception("Scheduler error")):
+            result = run_schedule(args, config, logger)
+
+        assert result == EXIT_ERROR
+
+
+class TestMain:
+    """Tests for main function."""
+
+    def test_main_function(self):
+        """Test main function."""
+        from small_etl.cli import main
+
+        with patch("small_etl.cli.parse_args") as mock_parse, \
+             patch("small_etl.cli.run_pipeline", return_value=EXIT_SUCCESS) as mock_run:
+            mock_parse.return_value = argparse.Namespace(command="run")
+
+            result = main()
+
+            assert result == EXIT_SUCCESS
+            mock_parse.assert_called_once()
+            mock_run.assert_called_once()
