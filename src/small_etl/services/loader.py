@@ -7,6 +7,7 @@ import polars as pl
 
 from small_etl.data_access.duckdb_client import DuckDBClient
 from small_etl.data_access.postgres_repository import PostgresRepository
+from small_etl.domain.registry import DataTypeRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +67,63 @@ class LoaderService:
             self._pg_attached = True
         return self._duckdb
 
+    def load(self, df: pl.DataFrame, data_type: str, batch_size: int = 10000) -> LoadResult:
+        """Load data into PostgreSQL using DuckDB postgres extension.
+
+        Generic method that uses DataTypeRegistry for configuration.
+
+        Args:
+            df: DataFrame with validated data.
+            data_type: Data type name (e.g., "asset", "trade").
+            batch_size: Number of records per batch (default: 10000).
+
+        Returns:
+            LoadResult with loading statistics.
+        """
+        config = DataTypeRegistry.get(data_type)
+        logger.info(f"Loading {len(df)} {data_type} records (batch_size={batch_size})")
+
+        if len(df) == 0:
+            return LoadResult(success=True, total_rows=0, loaded_count=0)
+
+        total_loaded = 0
+
+        try:
+            duckdb = self._ensure_pg_attached()
+
+            for batch_start in range(0, len(df), batch_size):
+                batch_end = min(batch_start + batch_size, len(df))
+                batch_df = df.slice(batch_start, batch_end - batch_start)
+
+                # Select only columns that exist in the database table
+                batch_df = batch_df.select([c for c in config.db_columns if c in batch_df.columns])
+
+                loaded = duckdb.upsert_to_postgres(batch_df, config.table_name, config.unique_key)
+                total_loaded += loaded
+
+                logger.debug(f"Loaded batch {batch_start}-{batch_end}: {loaded} records")
+
+            logger.info(f"Successfully loaded {total_loaded} {data_type} records")
+            return LoadResult(
+                success=True,
+                total_rows=len(df),
+                loaded_count=total_loaded,
+            )
+
+        except Exception as e:
+            logger.exception(f"Error loading {data_type}: {e}")
+            return LoadResult(
+                success=False,
+                total_rows=len(df),
+                loaded_count=total_loaded,
+                failed_count=len(df) - total_loaded,
+                error_message=str(e),
+            )
+
     def load_assets(self, df: pl.DataFrame, batch_size: int = 10000) -> LoadResult:
-        """Load asset data into PostgreSQL using DuckDB postgres extension.
+        """Load asset data into PostgreSQL.
+
+        Convenience method that delegates to generic load().
 
         Args:
             df: DataFrame with validated asset data.
@@ -76,49 +132,12 @@ class LoaderService:
         Returns:
             LoadResult with loading statistics.
         """
-        logger.info(f"Loading {len(df)} asset records (batch_size={batch_size})")
-
-        if len(df) == 0:
-            return LoadResult(success=True, total_rows=0, loaded_count=0)
-
-        total_loaded = 0
-
-        try:
-            duckdb = self._ensure_pg_attached()
-
-            for batch_start in range(0, len(df), batch_size):
-                batch_end = min(batch_start + batch_size, len(df))
-                batch_df = df.slice(batch_start, batch_end - batch_start)
-
-                # Select only columns that exist in the database table
-                db_columns = ["account_id", "account_type", "cash", "frozen_cash",
-                             "market_value", "total_asset", "updated_at"]
-                batch_df = batch_df.select([c for c in db_columns if c in batch_df.columns])
-
-                loaded = duckdb.upsert_to_postgres(batch_df, "asset", "account_id")
-                total_loaded += loaded
-
-                logger.debug(f"Loaded batch {batch_start}-{batch_end}: {loaded} records")
-
-            logger.info(f"Successfully loaded {total_loaded} asset records")
-            return LoadResult(
-                success=True,
-                total_rows=len(df),
-                loaded_count=total_loaded,
-            )
-
-        except Exception as e:
-            logger.exception(f"Error loading assets: {e}")
-            return LoadResult(
-                success=False,
-                total_rows=len(df),
-                loaded_count=total_loaded,
-                failed_count=len(df) - total_loaded,
-                error_message=str(e),
-            )
+        return self.load(df, "asset", batch_size)
 
     def load_trades(self, df: pl.DataFrame, batch_size: int = 10000) -> LoadResult:
-        """Load trade data into PostgreSQL using DuckDB postgres extension.
+        """Load trade data into PostgreSQL.
+
+        Convenience method that delegates to generic load().
 
         Args:
             df: DataFrame with validated trade data.
@@ -127,45 +146,4 @@ class LoaderService:
         Returns:
             LoadResult with loading statistics.
         """
-        logger.info(f"Loading {len(df)} trade records (batch_size={batch_size})")
-
-        if len(df) == 0:
-            return LoadResult(success=True, total_rows=0, loaded_count=0)
-
-        total_loaded = 0
-
-        try:
-            duckdb = self._ensure_pg_attached()
-
-            for batch_start in range(0, len(df), batch_size):
-                batch_end = min(batch_start + batch_size, len(df))
-                batch_df = df.slice(batch_start, batch_end - batch_start)
-
-                # Select only columns that exist in the database table
-                db_columns = ["account_id", "account_type", "traded_id", "stock_code",
-                             "traded_time", "traded_price", "traded_volume", "traded_amount",
-                             "strategy_name", "order_remark", "direction", "offset_flag",
-                             "created_at", "updated_at"]
-                batch_df = batch_df.select([c for c in db_columns if c in batch_df.columns])
-
-                loaded = duckdb.upsert_to_postgres(batch_df, "trade", "traded_id")
-                total_loaded += loaded
-
-                logger.debug(f"Loaded batch {batch_start}-{batch_end}: {loaded} records")
-
-            logger.info(f"Successfully loaded {total_loaded} trade records")
-            return LoadResult(
-                success=True,
-                total_rows=len(df),
-                loaded_count=total_loaded,
-            )
-
-        except Exception as e:
-            logger.exception(f"Error loading trades: {e}")
-            return LoadResult(
-                success=False,
-                total_rows=len(df),
-                loaded_count=total_loaded,
-                failed_count=len(df) - total_loaded,
-                error_message=str(e),
-            )
+        return self.load(df, "trade", batch_size)

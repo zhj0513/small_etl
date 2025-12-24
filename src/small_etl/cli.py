@@ -673,10 +673,12 @@ def _run_dry(pipeline: ETLPipeline, command: str, config: dict[str, Any]) -> Pip
     """
     from datetime import UTC, datetime
 
+    from small_etl.application.pipeline import DataTypeResult
+
     started_at = datetime.now(UTC)
 
     try:
-        results: dict = {}
+        results: dict[str, DataTypeResult] = {}
 
         # Extract and validate based on command
         if command in ("run", "assets"):
@@ -684,7 +686,11 @@ def _run_dry(pipeline: ETLPipeline, command: str, config: dict[str, Any]) -> Pip
                 bucket=config["s3"]["bucket"],
                 object_name=config["s3"]["assets_file"],
             )
-            results["assets_validation"] = pipeline._validator.validate_assets(assets_df)
+            assets_validation = pipeline._validator.validate_assets(assets_df)
+            results["asset"] = DataTypeResult(
+                data_type="asset",
+                validation=assets_validation,
+            )
 
         if command in ("run", "trades"):
             trades_df = pipeline._extractor.extract_trades(
@@ -692,13 +698,17 @@ def _run_dry(pipeline: ETLPipeline, command: str, config: dict[str, Any]) -> Pip
                 object_name=config["s3"]["trades_file"],
             )
             # For dry-run trades, we don't check FK since assets aren't loaded
-            results["trades_validation"] = pipeline._validator.validate_trades(trades_df, valid_account_ids=None)
+            trades_validation = pipeline._validator.validate_trades(trades_df, valid_account_ids=None)
+            results["trade"] = DataTypeResult(
+                data_type="trade",
+                validation=trades_validation,
+            )
 
         return PipelineResult(
             success=True,
             started_at=started_at,
             completed_at=datetime.now(UTC),
-            **results,
+            results=results,
         )
 
     except Exception as e:

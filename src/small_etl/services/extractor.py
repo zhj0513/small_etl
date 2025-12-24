@@ -10,6 +10,7 @@ import polars as pl
 
 from small_etl.data_access.duckdb_client import DuckDBClient
 from small_etl.data_access.s3_connector import S3Connector
+from small_etl.domain.registry import DataTypeRegistry
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
@@ -95,8 +96,55 @@ class ExtractorService:
 
         return df.select(expressions)
 
+    def extract(
+        self,
+        bucket: str,
+        object_name: str,
+        data_type: str,
+    ) -> pl.DataFrame:
+        """Extract data from S3 CSV file using registry configuration.
+
+        Generic method that uses DataTypeRegistry for configuration.
+
+        Args:
+            bucket: S3 bucket name.
+            object_name: CSV file object name.
+            data_type: Data type name (e.g., "asset", "trade").
+
+        Returns:
+            Polars DataFrame with extracted data.
+        """
+        config = DataTypeRegistry.get(data_type)
+        logger.info(f"Extracting {data_type} from {bucket}/{object_name}")
+
+        csv_bytes = self._s3.download_csv(bucket, object_name)
+
+        # Check if Hydra config has type-specific column definitions
+        config_attr = f"{data_type}s"  # e.g., "assets", "trades"
+        if self._config is not None and hasattr(self._config, config_attr):
+            df = pl.read_csv(
+                io.BytesIO(csv_bytes),
+                has_header=True,
+                infer_schema_length=10000,
+            )
+            type_config = getattr(self._config, config_attr)
+            df = self._transform_dataframe(df, type_config.columns)
+            logger.info(f"Extracted {len(df)} {data_type} records (config-driven)")
+        elif config.extract_sql:
+            # Use registry SQL extraction
+            self._duckdb.load_csv_bytes(csv_bytes, config.raw_table_name)
+            sql = config.extract_sql.format(table=config.raw_table_name)
+            df = self._duckdb.query(sql)
+            logger.info(f"Extracted {len(df)} {data_type} records (DuckDB)")
+        else:
+            raise ValueError(f"No extraction configuration for data type: {data_type}")
+
+        return df
+
     def extract_assets(self, bucket: str, object_name: str) -> pl.DataFrame:
         """Extract asset data from S3 CSV file.
+
+        Convenience method that delegates to generic extract().
 
         Args:
             bucket: S3 bucket name.
@@ -105,37 +153,12 @@ class ExtractorService:
         Returns:
             Polars DataFrame with asset data.
         """
-        logger.info(f"Extracting assets from {bucket}/{object_name}")
-        csv_bytes = self._s3.download_csv(bucket, object_name)
-
-        if self._config is not None and hasattr(self._config, "assets"):
-            df = pl.read_csv(
-                io.BytesIO(csv_bytes),
-                has_header=True,
-                infer_schema_length=10000,
-            )
-            df = self._transform_dataframe(df, self._config.assets.columns)
-            logger.info(f"Extracted {len(df)} asset records (config-driven)")
-        else:
-            self._duckdb.load_csv_bytes(csv_bytes, "raw_assets")
-            df = self._duckdb.query("""
-                SELECT
-                    id,
-                    CAST(account_id AS VARCHAR) as account_id,
-                    account_type,
-                    CAST(cash AS DECIMAL(20, 2)) as cash,
-                    CAST(frozen_cash AS DECIMAL(20, 2)) as frozen_cash,
-                    CAST(market_value AS DECIMAL(20, 2)) as market_value,
-                    CAST(total_asset AS DECIMAL(20, 2)) as total_asset,
-                    updated_at
-                FROM raw_assets
-            """)
-            logger.info(f"Extracted {len(df)} asset records (DuckDB fallback)")
-
-        return df
+        return self.extract(bucket, object_name, "asset")
 
     def extract_trades(self, bucket: str, object_name: str) -> pl.DataFrame:
         """Extract trade data from S3 CSV file.
+
+        Convenience method that delegates to generic extract().
 
         Args:
             bucket: S3 bucket name.
@@ -144,38 +167,4 @@ class ExtractorService:
         Returns:
             Polars DataFrame with trade data.
         """
-        logger.info(f"Extracting trades from {bucket}/{object_name}")
-        csv_bytes = self._s3.download_csv(bucket, object_name)
-
-        if self._config is not None and hasattr(self._config, "trades"):
-            df = pl.read_csv(
-                io.BytesIO(csv_bytes),
-                has_header=True,
-                infer_schema_length=10000,
-            )
-            df = self._transform_dataframe(df, self._config.trades.columns)
-            logger.info(f"Extracted {len(df)} trade records (config-driven)")
-        else:
-            self._duckdb.load_csv_bytes(csv_bytes, "raw_trades")
-            df = self._duckdb.query("""
-                SELECT
-                    id,
-                    CAST(account_id AS VARCHAR) as account_id,
-                    account_type,
-                    traded_id,
-                    stock_code,
-                    traded_time,
-                    CAST(traded_price AS DECIMAL(20, 2)) as traded_price,
-                    traded_volume,
-                    CAST(traded_amount AS DECIMAL(20, 2)) as traded_amount,
-                    strategy_name,
-                    order_remark,
-                    direction,
-                    offset_flag,
-                    created_at,
-                    updated_at
-                FROM raw_trades
-            """)
-            logger.info(f"Extracted {len(df)} trade records (DuckDB fallback)")
-
-        return df
+        return self.extract(bucket, object_name, "trade")

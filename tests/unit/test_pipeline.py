@@ -205,8 +205,8 @@ class TestETLPipeline:
         mock_repo.get_all_account_ids.return_value = {"10000000001", "10000000002"}
 
         mock_analytics = mock_analytics_cls.return_value
-        mock_analytics.asset_statistics.return_value = mock_asset_stats
-        mock_analytics.trade_statistics.return_value = mock_trade_stats
+        mock_analytics.asset_statistics_from_db.return_value = mock_asset_stats
+        mock_analytics.trade_statistics_from_db.return_value = mock_trade_stats
 
         # Run pipeline
         pipeline = ETLPipeline(mock_config)
@@ -435,7 +435,7 @@ class TestETLPipeline:
         mock_loader.load_assets.return_value = mock_load_result_success
 
         mock_analytics = mock_analytics_cls.return_value
-        mock_analytics.asset_statistics.return_value = mock_asset_stats
+        mock_analytics.asset_statistics_from_db.return_value = mock_asset_stats
 
         pipeline = ETLPipeline(mock_config)
         result = pipeline.run_assets_only()
@@ -487,7 +487,7 @@ class TestETLPipeline:
         mock_loader.load_trades.return_value = mock_load_result_success
 
         mock_analytics = mock_analytics_cls.return_value
-        mock_analytics.trade_statistics.return_value = mock_trade_stats
+        mock_analytics.trade_statistics_from_db.return_value = mock_trade_stats
 
         pipeline = ETLPipeline(mock_config)
         result = pipeline.run_trades_only()

@@ -265,7 +265,7 @@ class TestPrintResult:
 
     def test_print_result_with_assets_validation(self, capsys):
         """Test printing result with assets validation."""
-        from small_etl.application.pipeline import PipelineResult
+        from small_etl.application.pipeline import DataTypeResult, PipelineResult
         from small_etl.services.validator import ValidationResult
 
         import polars as pl
@@ -284,7 +284,12 @@ class TestPrintResult:
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            assets_validation=assets_validation,
+            results={
+                "asset": DataTypeResult(
+                    data_type="asset",
+                    validation=assets_validation,
+                ),
+            },
         )
         print_result(result)
 
@@ -294,7 +299,7 @@ class TestPrintResult:
 
     def test_print_result_with_load_result(self, capsys):
         """Test printing result with load result."""
-        from small_etl.application.pipeline import PipelineResult
+        from small_etl.application.pipeline import DataTypeResult, PipelineResult
         from small_etl.services.loader import LoadResult
 
         assets_load = LoadResult(
@@ -307,7 +312,12 @@ class TestPrintResult:
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            assets_load=assets_load,
+            results={
+                "asset": DataTypeResult(
+                    data_type="asset",
+                    load=assets_load,
+                ),
+            },
         )
         print_result(result)
 
@@ -319,7 +329,7 @@ class TestPrintResult:
         """Test printing result with verbose stats."""
         from decimal import Decimal
 
-        from small_etl.application.pipeline import PipelineResult
+        from small_etl.application.pipeline import DataTypeResult, PipelineResult
         from small_etl.services.analytics import AssetStatistics
 
         assets_stats = AssetStatistics(
@@ -337,7 +347,12 @@ class TestPrintResult:
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            assets_stats=assets_stats,
+            results={
+                "asset": DataTypeResult(
+                    data_type="asset",
+                    statistics=assets_stats,
+                ),
+            },
         )
         print_result(result, verbose=True)
 
@@ -348,7 +363,7 @@ class TestPrintResult:
         """Test printing result with verbose trades stats."""
         from decimal import Decimal
 
-        from small_etl.application.pipeline import PipelineResult
+        from small_etl.application.pipeline import DataTypeResult, PipelineResult
         from small_etl.services.analytics import TradeStatistics
 
         trades_stats = TradeStatistics(
@@ -366,7 +381,12 @@ class TestPrintResult:
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            trades_stats=trades_stats,
+            results={
+                "trade": DataTypeResult(
+                    data_type="trade",
+                    statistics=trades_stats,
+                ),
+            },
         )
         print_result(result, verbose=True)
 
@@ -375,7 +395,7 @@ class TestPrintResult:
 
     def test_print_result_verbose_with_validation_errors(self, capsys):
         """Test printing result with verbose validation errors."""
-        from small_etl.application.pipeline import PipelineResult
+        from small_etl.application.pipeline import DataTypeResult, PipelineResult
         from small_etl.services.validator import ValidationError, ValidationResult
 
         import polars as pl
@@ -399,7 +419,12 @@ class TestPrintResult:
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            assets_validation=assets_validation,
+            results={
+                "asset": DataTypeResult(
+                    data_type="asset",
+                    validation=assets_validation,
+                ),
+            },
         )
         print_result(result, verbose=True)
 
@@ -1034,7 +1059,7 @@ class TestPrintResultTradesValidation:
 
     def test_print_result_with_trades_validation(self, capsys):
         """Test printing result with trades validation."""
-        from small_etl.application.pipeline import PipelineResult
+        from small_etl.application.pipeline import DataTypeResult, PipelineResult
         from small_etl.services.validator import ValidationResult
 
         import polars as pl
@@ -1053,7 +1078,12 @@ class TestPrintResultTradesValidation:
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            trades_validation=trades_validation,
+            results={
+                "trade": DataTypeResult(
+                    data_type="trade",
+                    validation=trades_validation,
+                ),
+            },
         )
         print_result(result)
 
@@ -1063,7 +1093,7 @@ class TestPrintResultTradesValidation:
 
     def test_print_result_with_trades_load(self, capsys):
         """Test printing result with trades load result."""
-        from small_etl.application.pipeline import PipelineResult
+        from small_etl.application.pipeline import DataTypeResult, PipelineResult
         from small_etl.services.loader import LoadResult
 
         trades_load = LoadResult(
@@ -1076,7 +1106,12 @@ class TestPrintResultTradesValidation:
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            trades_load=trades_load,
+            results={
+                "trade": DataTypeResult(
+                    data_type="trade",
+                    load=trades_load,
+                ),
+            },
         )
         print_result(result)
 
@@ -1086,7 +1121,7 @@ class TestPrintResultTradesValidation:
 
     def test_print_result_verbose_with_trades_validation_errors(self, capsys):
         """Test printing result with verbose trades validation errors."""
-        from small_etl.application.pipeline import PipelineResult
+        from small_etl.application.pipeline import DataTypeResult, PipelineResult
         from small_etl.services.validator import ValidationError, ValidationResult
 
         import polars as pl
@@ -1110,7 +1145,12 @@ class TestPrintResultTradesValidation:
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            trades_validation=trades_validation,
+            results={
+                "trade": DataTypeResult(
+                    data_type="trade",
+                    validation=trades_validation,
+                ),
+            },
         )
         print_result(result, verbose=True)
 

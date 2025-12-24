@@ -1,7 +1,7 @@
 """ETL Pipeline for orchestrating the data flow."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,6 +24,23 @@ def _utc_now() -> datetime:
 
 
 @dataclass
+class DataTypeResult:
+    """Result for a single data type processing.
+
+    Attributes:
+        data_type: Name of the data type (e.g., "asset", "trade").
+        validation: Validation result.
+        load: Loading result.
+        statistics: Statistics (type varies by data type).
+    """
+
+    data_type: str
+    validation: ValidationResult | None = None
+    load: LoadResult | None = None
+    statistics: Any = None
+
+
+@dataclass
 class PipelineResult:
     """Result of ETL pipeline execution.
 
@@ -31,25 +48,48 @@ class PipelineResult:
         success: True if pipeline completed successfully.
         started_at: Pipeline start timestamp.
         completed_at: Pipeline completion timestamp.
-        assets_validation: Asset validation result.
-        trades_validation: Trade validation result.
-        assets_load: Asset loading result.
-        trades_load: Trade loading result.
-        assets_stats: Asset statistics.
-        trades_stats: Trade statistics.
+        results: Dictionary of results by data type.
         error_message: Error message if pipeline failed.
     """
 
     success: bool
     started_at: datetime
     completed_at: datetime | None = None
-    assets_validation: ValidationResult | None = None
-    trades_validation: ValidationResult | None = None
-    assets_load: LoadResult | None = None
-    trades_load: LoadResult | None = None
-    assets_stats: AssetStatistics | None = None
-    trades_stats: TradeStatistics | None = None
+    results: dict[str, DataTypeResult] = field(default_factory=dict)
     error_message: str | None = None
+
+    # Backward compatibility properties
+    @property
+    def assets_validation(self) -> ValidationResult | None:
+        """Get asset validation result (backward compatibility)."""
+        return self.results.get("asset", DataTypeResult("asset")).validation
+
+    @property
+    def trades_validation(self) -> ValidationResult | None:
+        """Get trade validation result (backward compatibility)."""
+        return self.results.get("trade", DataTypeResult("trade")).validation
+
+    @property
+    def assets_load(self) -> LoadResult | None:
+        """Get asset load result (backward compatibility)."""
+        return self.results.get("asset", DataTypeResult("asset")).load
+
+    @property
+    def trades_load(self) -> LoadResult | None:
+        """Get trade load result (backward compatibility)."""
+        return self.results.get("trade", DataTypeResult("trade")).load
+
+    @property
+    def assets_stats(self) -> AssetStatistics | None:
+        """Get asset statistics (backward compatibility)."""
+        stats = self.results.get("asset", DataTypeResult("asset")).statistics
+        return stats if isinstance(stats, AssetStatistics) else None
+
+    @property
+    def trades_stats(self) -> TradeStatistics | None:
+        """Get trade statistics (backward compatibility)."""
+        stats = self.results.get("trade", DataTypeResult("trade")).statistics
+        return stats if isinstance(stats, TradeStatistics) else None
 
 
 class ETLPipeline:
@@ -166,12 +206,20 @@ class ETLPipeline:
                 success=True,
                 started_at=started_at,
                 completed_at=completed_at,
-                assets_validation=assets_validation,
-                trades_validation=trades_validation,
-                assets_load=assets_load,
-                trades_load=trades_load,
-                assets_stats=assets_stats,
-                trades_stats=trades_stats,
+                results={
+                    "asset": DataTypeResult(
+                        data_type="asset",
+                        validation=assets_validation,
+                        load=assets_load,
+                        statistics=assets_stats,
+                    ),
+                    "trade": DataTypeResult(
+                        data_type="trade",
+                        validation=trades_validation,
+                        load=trades_load,
+                        statistics=trades_stats,
+                    ),
+                },
             )
 
         except Exception as e:
@@ -211,9 +259,14 @@ class ETLPipeline:
                 success=assets_load.success,
                 started_at=started_at,
                 completed_at=_utc_now(),
-                assets_validation=assets_validation,
-                assets_load=assets_load,
-                assets_stats=assets_stats,
+                results={
+                    "asset": DataTypeResult(
+                        data_type="asset",
+                        validation=assets_validation,
+                        load=assets_load,
+                        statistics=assets_stats,
+                    ),
+                },
             )
 
         except Exception as e:
@@ -259,9 +312,14 @@ class ETLPipeline:
                 success=trades_load.success,
                 started_at=started_at,
                 completed_at=_utc_now(),
-                trades_validation=trades_validation,
-                trades_load=trades_load,
-                trades_stats=trades_stats,
+                results={
+                    "trade": DataTypeResult(
+                        data_type="trade",
+                        validation=trades_validation,
+                        load=trades_load,
+                        statistics=trades_stats,
+                    ),
+                },
             )
 
         except Exception as e:

@@ -7,7 +7,7 @@ import pandera.errors
 import pandera.polars as pa
 import polars as pl
 
-from small_etl.domain.schemas import AssetSchema, TradeSchema
+from small_etl.domain.registry import DataTypeRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -202,14 +202,44 @@ class ValidatorService:
                 invalid_count=invalid_count,
             )
 
+    def validate(
+        self,
+        df: pl.DataFrame,
+        data_type: str,
+        valid_foreign_keys: set[str] | None = None,
+    ) -> ValidationResult:
+        """Validate data using the registered schema for the data type.
+
+        Generic method that uses DataTypeRegistry for configuration.
+
+        Args:
+            df: DataFrame to validate.
+            data_type: Data type name (e.g., "asset", "trade").
+            valid_foreign_keys: Optional set of valid foreign key values.
+
+        Returns:
+            ValidationResult with valid/invalid rows and errors.
+        """
+        config = DataTypeRegistry.get(data_type)
+
+        if config.schema_class is None:
+            raise ValueError(f"No schema registered for data type: {data_type}")
+
+        # Validate with Pandera schema
+        result = self._validate_with_schema(df, config.schema_class, data_type)
+
+        # Apply foreign key validation if configured and keys provided
+        if config.foreign_key_column and valid_foreign_keys and result.valid_count > 0:
+            result = self._validate_foreign_keys(
+                result, valid_foreign_keys, config.foreign_key_column
+            )
+
+        return result
+
     def validate_assets(self, df: pl.DataFrame) -> ValidationResult:
         """Validate asset data using Pandera AssetSchema.
 
-        Validates:
-            - Required fields presence
-            - Numeric fields >= 0
-            - Account type in valid range
-            - total_asset = cash + frozen_cash + market_value (within tolerance)
+        Convenience method that delegates to generic validate().
 
         Args:
             df: DataFrame with asset data.
@@ -217,18 +247,12 @@ class ValidatorService:
         Returns:
             ValidationResult with valid/invalid rows and errors.
         """
-        return self._validate_with_schema(df, AssetSchema, "asset")
+        return self.validate(df, "asset")
 
     def validate_trades(self, df: pl.DataFrame, valid_account_ids: set[str] | None = None) -> ValidationResult:
         """Validate trade data using Pandera TradeSchema.
 
-        Validates:
-            - Required fields presence
-            - Numeric fields > 0 for price/amount/volume
-            - Account type in valid range
-            - Direction and offset_flag in valid range
-            - traded_amount = traded_price * traded_volume (within tolerance)
-            - account_id exists in valid_account_ids (if provided)
+        Convenience method that delegates to generic validate().
 
         Args:
             df: DataFrame with trade data.
@@ -237,23 +261,20 @@ class ValidatorService:
         Returns:
             ValidationResult with valid/invalid rows and errors.
         """
-        # First validate with Pandera schema
-        result = self._validate_with_schema(df, TradeSchema, "trade")
-
-        # If valid_account_ids provided and there are valid rows, validate foreign keys
-        if valid_account_ids and result.valid_count > 0:
-            result = self._validate_foreign_keys(result, valid_account_ids)
-
-        return result
+        return self.validate(df, "trade", valid_account_ids)
 
     def _validate_foreign_keys(
-        self, result: ValidationResult, valid_account_ids: set[str]
+        self,
+        result: ValidationResult,
+        valid_keys: set[str],
+        fk_column: str = "account_id",
     ) -> ValidationResult:
         """Validate foreign key constraints on valid rows.
 
         Args:
             result: Current validation result.
-            valid_account_ids: Set of valid account IDs.
+            valid_keys: Set of valid foreign key values.
+            fk_column: Name of the foreign key column.
 
         Returns:
             Updated ValidationResult with foreign key validation applied.
@@ -265,8 +286,8 @@ class ValidatorService:
         # Add index for tracking
         valid_rows_indexed = valid_rows.with_row_index("_fk_index")
 
-        # Find rows with invalid account_ids
-        fk_valid_mask = valid_rows_indexed["account_id"].cast(pl.Utf8).is_in(list(valid_account_ids))
+        # Find rows with invalid foreign keys
+        fk_valid_mask = valid_rows_indexed[fk_column].cast(pl.Utf8).is_in(list(valid_keys))
         invalid_fk_rows = valid_rows_indexed.filter(~fk_valid_mask)
 
         if len(invalid_fk_rows) == 0:
@@ -278,9 +299,9 @@ class ValidatorService:
             fk_errors.append(
                 ValidationError(
                     row_index=int(row["_fk_index"]),
-                    field="account_id",
-                    message=f"account_id not found in asset table: {row.get('account_id')}",
-                    value=str(row.get("account_id")),
+                    field=fk_column,
+                    message=f"{fk_column} not found in asset table: {row.get(fk_column)}",
+                    value=str(row.get(fk_column)),
                 )
             )
 
