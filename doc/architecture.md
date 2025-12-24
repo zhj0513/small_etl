@@ -418,21 +418,104 @@ flowchart LR
 **职责:**
 - 连接 S3/MinIO 存储
 - 读取 CSV 文件为字节流
-- 通过 DuckDB 加载并转换数据类型
+- 通过 DuckDB 或 Polars 加载并转换数据类型
 - 返回 Polars DataFrame
 
 **接口:**
 ```python
 class ExtractorService:
-    def __init__(self, s3_connector: S3Connector, duckdb_client: DuckDBClient): ...
+    def __init__(self, s3_connector: S3Connector, duckdb_client: DuckDBClient, config: DictConfig | None = None): ...
     def extract_assets(self, bucket: str, object_name: str) -> pl.DataFrame: ...
     def extract_trades(self, bucket: str, object_name: str) -> pl.DataFrame: ...
 ```
 
-**实现细节:**
-- 用hydra管理来源csv格式定义和字段转换规则
-- 使用polars进行格式转换、字段转换的规则处理
-- 自动处理 CSV 编码和分隔符
+**双模式提取实现:**
+
+ExtractorService 支持两种提取模式，根据配置自动选择：
+
+```python
+def extract_assets(self, bucket: str, object_name: str) -> pl.DataFrame:
+    csv_bytes = self._s3.download_csv(bucket, object_name)
+
+    if self._config is not None and hasattr(self._config, "assets"):
+        # 模式1: 配置驱动 - 使用 Polars + Hydra 列映射
+        df = pl.read_csv(io.BytesIO(csv_bytes), has_header=True, infer_schema_length=10000)
+        df = self._transform_dataframe(df, self._config.assets.columns)
+        # 输出: "Extracted N asset records (config-driven)"
+    else:
+        # 模式2: DuckDB 自动型 - SQL 类型转换
+        self._duckdb.load_csv_bytes(csv_bytes, "raw_assets")
+        df = self._duckdb.query("""
+            SELECT
+                id,
+                CAST(account_id AS VARCHAR) as account_id,
+                account_type,
+                CAST(cash AS DECIMAL(20, 2)) as cash,
+                ...
+            FROM raw_assets
+        """)
+        # 输出: "Extracted N asset records (DuckDB fallback)"
+    return df
+```
+
+**配置驱动转换 (_transform_dataframe):**
+
+```python
+def _transform_dataframe(self, df: pl.DataFrame, columns_config: list[Any]) -> pl.DataFrame:
+    """根据 Hydra 配置进行列转换"""
+    expressions = []
+    for col_cfg in columns_config:
+        csv_name = col_cfg.csv_name    # CSV 中的原始列名
+        target_name = col_cfg.name     # 目标列名
+        dtype = col_cfg.dtype          # 目标数据类型
+
+        if dtype == "Datetime":
+            fmt = getattr(col_cfg, "format", "%Y-%m-%dT%H:%M:%S")
+            expr = pl.col(csv_name).str.to_datetime(fmt).alias(target_name)
+        elif dtype == "Float64":
+            expr = pl.col(csv_name).cast(pl.Float64).alias(target_name)
+        elif dtype == "Utf8":
+            expr = pl.col(csv_name).cast(pl.Utf8).alias(target_name)
+        elif dtype in ("Int32", "Int64"):
+            expr = pl.col(csv_name).cast(getattr(pl, dtype)()).alias(target_name)
+        else:
+            expr = pl.col(csv_name).alias(target_name)
+        expressions.append(expr)
+
+    return df.select(expressions)
+```
+
+**模式选择条件:**
+| 条件 | 选择模式 | 优势 |
+|------|----------|------|
+| `config` 包含 `assets`/`trades` 配置 | 配置驱动 (Polars) | 灵活的列映射和类型转换 |
+| `config` 为空或无对应配置 | DuckDB 自动型 | 快速启动，自动类型推断 |
+
+**Hydra 列映射配置示例 (`configs/extractor/default.yaml`):**
+
+```yaml
+assets:
+  columns:
+    - name: account_id        # 目标列名
+      csv_name: account_id    # CSV 中的列名
+      dtype: Utf8             # 目标类型
+      nullable: false
+    - name: cash
+      csv_name: cash
+      dtype: Float64
+      nullable: false
+    - name: updated_at
+      csv_name: updated_at
+      dtype: Datetime
+      format: "%Y-%m-%dT%H:%M:%S%.f"  # 时间戳格式
+      nullable: false
+
+csv_options:
+  delimiter: ","
+  has_header: true
+  encoding: "utf-8"
+  null_values: ["", "NULL", "null", "None"]
+```
 
 #### 3.3.2 ValidatorService (验证器)
 
@@ -491,16 +574,86 @@ class LoadResult:
     error_message: str | None = None
 
 class LoaderService:
-    def __init__(self, repository: PostgresRepository): ...
+    def __init__(self, repository: PostgresRepository, duckdb_client: DuckDBClient, database_url: str): ...
     def load_assets(self, df: pl.DataFrame, batch_size: int = 10000) -> LoadResult: ...
     def load_trades(self, df: pl.DataFrame, batch_size: int = 10000) -> LoadResult: ...
 ```
 
+**DuckDB PostgreSQL 插件 UPSERT 实现:**
+
+LoaderService 使用 DuckDB 的 PostgreSQL 扩展进行高性能批量写入，采用 UPDATE + INSERT 分离策略：
+
+```python
+def upsert_to_postgres(self, df: pl.DataFrame, table_name: str, conflict_column: str) -> int:
+    """使用 UPDATE + INSERT 模式处理外键约束"""
+    if df.is_empty():
+        return 0
+
+    # 1. 注册 DataFrame 为 DuckDB 临时表
+    temp_table = f"_temp_{table_name}"
+    self._conn.register(temp_table, df.to_arrow())
+
+    # 2. UPDATE 已存在的记录
+    columns = df.columns
+    update_columns = [c for c in columns if c != conflict_column]
+    set_clause = ", ".join([f'{c} = t."{c}"' for c in update_columns])
+
+    update_sql = f"""
+        UPDATE pg.{table_name} AS p
+        SET {set_clause}
+        FROM {temp_table} AS t
+        WHERE p.{conflict_column} = t."{conflict_column}"
+    """
+    self._conn.execute(update_sql)
+
+    # 3. INSERT 新记录 (使用 NOT EXISTS 过滤已存在的)
+    columns_str = ", ".join(columns)
+    values_str = ", ".join([f'"{c}"' for c in columns])
+
+    insert_sql = f"""
+        INSERT INTO pg.{table_name} ({columns_str})
+        SELECT {values_str} FROM {temp_table} t
+        WHERE NOT EXISTS (
+            SELECT 1 FROM pg.{table_name} p
+            WHERE p.{conflict_column} = t."{conflict_column}"
+        )
+    """
+    self._conn.execute(insert_sql)
+
+    # 4. 清理临时表
+    self._conn.unregister(temp_table)
+    return len(df)
+```
+
+**为什么使用 UPDATE + INSERT 而非 ON CONFLICT:**
+
+| 方案 | 问题 | 适用场景 |
+|------|------|----------|
+| `ON CONFLICT DO UPDATE` | 在有外键约束时可能产生死锁或约束冲突 | 简单表，无外键 |
+| `UPDATE + INSERT 分离` | 分两步执行，先更新后插入，避免外键问题 | 有外键约束的表 |
+
+本项目中 Trade 表有 `account_id` 外键指向 Asset 表，因此采用分离策略。
+
+**批处理实现:**
+
+```python
+def load_assets(self, df: pl.DataFrame, batch_size: int = 10000) -> LoadResult:
+    total_rows = len(df)
+    loaded_count = 0
+
+    for offset in range(0, total_rows, batch_size):
+        batch = df.slice(offset, batch_size)  # Polars slice 切分批次
+        count = self._duckdb.upsert_to_postgres(batch, "asset", "account_id")
+        loaded_count += count
+
+    return LoadResult(success=True, total_rows=total_rows, loaded_count=loaded_count)
+```
+
 **实现细节:**
-- 使用duckdb的postgre插件把数据写到数据库
-- 使用 `df.slice()` 进行批次切分
-- 调用 `polars_to_assets()` / `polars_to_trades()` 转换
-- UPSERT 逻辑: 按主键查询，存在则更新，不存在则插入
+- 使用 `df.slice(offset, length)` 进行批次切分，内存效率高
+- Asset 表冲突键: `account_id`
+- Trade 表冲突键: `traded_id`
+- 批次大小默认 10,000，可通过 CLI 参数 `--batch-size` 调整
 
 #### 3.3.4 AnalyticsService (统计分析)
 
@@ -612,29 +765,94 @@ class Trade(SQLModel, table=True):
 
 #### 3.4.4 Pandera Schema (验证模式)
 
+**常量定义 (`domain/schemas.py`):**
+
+```python
+# 浮点数验证容差
+DEFAULT_TOLERANCE = 0.01
+```
+
+**AssetSchema 实现:**
+
 ```python
 class AssetSchema(pa.DataFrameModel):
     """资产数据验证Schema"""
     account_id: str = pa.Field(str_length={"min_value": 1, "max_value": 20})
-    account_type: int = pa.Field(isin=VALID_ACCOUNT_TYPES)
+    account_type: int = pa.Field(isin=list(VALID_ACCOUNT_TYPES))
     cash: float = pa.Field(ge=0)
     frozen_cash: float = pa.Field(ge=0)
     market_value: float = pa.Field(ge=0)
     total_asset: float = pa.Field(ge=0)
+    updated_at: pl.Datetime = pa.Field()
+
+    class Config:
+        strict = False  # 允许额外字段 (id, _original_index)
+        coerce = True   # 自动类型转换
 
     @pa.dataframe_check
-    def total_asset_equals_sum(cls, df: pl.DataFrame) -> pl.Series:
-        """验证 total_asset = cash + frozen_cash + market_value"""
-        ...
+    @classmethod
+    def total_asset_equals_sum(cls, data: PolarsData) -> pl.LazyFrame:
+        """验证 total_asset = cash + frozen_cash + market_value (±0.01)"""
+        return data.lazyframe.select(
+            (pl.col("total_asset") - (pl.col("cash") + pl.col("frozen_cash") + pl.col("market_value")))
+            .abs()
+            .le(DEFAULT_TOLERANCE)
+        )
+```
 
+**TradeSchema 实现:**
+
+```python
 class TradeSchema(pa.DataFrameModel):
     """交易数据验证Schema"""
-    # ... 类似结构
+    account_id: str = pa.Field(str_length={"min_value": 1, "max_value": 20})
+    account_type: int = pa.Field(isin=list(VALID_ACCOUNT_TYPES))
+    traded_id: str = pa.Field(str_length={"min_value": 1, "max_value": 50})
+    stock_code: str = pa.Field(str_length={"min_value": 1, "max_value": 10})
+    traded_time: pl.Datetime = pa.Field()
+    traded_price: float = pa.Field(gt=0)
+    traded_volume: int = pa.Field(gt=0)
+    traded_amount: float = pa.Field(gt=0)
+    strategy_name: str = pa.Field(str_length={"min_value": 1, "max_value": 50})
+    order_remark: str = pa.Field(nullable=True)
+    direction: int = pa.Field(isin=list(VALID_DIRECTIONS))
+    offset_flag: int = pa.Field(isin=list(VALID_OFFSET_FLAGS))
+    created_at: pl.Datetime = pa.Field()
+    updated_at: pl.Datetime = pa.Field()
+
+    class Config:
+        strict = False
+        coerce = True
 
     @pa.dataframe_check
-    def traded_amount_equals_product(cls, df: pl.DataFrame) -> pl.Series:
-        """验证 traded_amount = traded_price × traded_volume"""
-        ...
+    @classmethod
+    def traded_amount_equals_product(cls, data: PolarsData) -> pl.LazyFrame:
+        """验证 traded_amount = traded_price × traded_volume (±0.01)"""
+        return data.lazyframe.select(
+            (pl.col("traded_amount") - (pl.col("traded_price") * pl.col("traded_volume")))
+            .abs()
+            .le(DEFAULT_TOLERANCE)
+        )
+```
+
+**`@pa.dataframe_check` 装饰器说明:**
+
+| 特性 | 说明 |
+|------|------|
+| 参数类型 | `PolarsData` - Pandera 封装的 Polars 数据类型 |
+| 返回类型 | `pl.LazyFrame` - 包含布尔值列，表示每行是否通过验证 |
+| 访问方式 | `data.lazyframe` 获取 LazyFrame 进行列式计算 |
+| 计算模式 | 使用 Polars 的懒执行，支持大数据集高效验证 |
+
+**验证流程:**
+```
+DataFrame → Pandera Schema → 字段级验证 → @pa.dataframe_check → 有效/无效行分离
+                              ↓
+                         ValidationResult {
+                           valid_rows: DataFrame,
+                           invalid_rows: DataFrame,
+                           errors: List[ValidationError]
+                         }
 ```
 
 ### 3.5 配置管理架构
@@ -651,6 +869,8 @@ configs/
 │   └── dev.yaml          # S3/MinIO 配置
 ├── etl/
 │   └── default.yaml      # ETL 参数配置
+├── extractor/
+│   └── default.yaml      # CSV 列映射配置 (新增)
 └── scheduler/
     └── default.yaml      # 调度器配置
 ```
@@ -661,6 +881,7 @@ defaults:
   - db: dev
   - s3: dev
   - etl: default
+  - extractor: default    # 新增: CSV 格式配置
   - scheduler: default
   - _self_
 
@@ -698,6 +919,124 @@ batch_size: 10000
 validation:
   tolerance: 0.01
 ```
+
+**Extractor配置 (extractor/default.yaml):**
+```yaml
+# CSV 列映射配置 - 定义 CSV 列与目标数据类型的对应关系
+assets:
+  columns:
+    - name: account_id        # 目标列名
+      csv_name: account_id    # CSV 原始列名
+      dtype: Utf8             # Polars 数据类型
+      nullable: false
+    - name: cash
+      csv_name: cash
+      dtype: Float64
+      nullable: false
+    - name: updated_at
+      csv_name: updated_at
+      dtype: Datetime
+      format: "%Y-%m-%dT%H:%M:%S%.f"
+      nullable: false
+
+trades:
+  columns:
+    - name: traded_id
+      csv_name: traded_id
+      dtype: Utf8
+      nullable: false
+    # ... 其他列配置
+
+csv_options:
+  delimiter: ","
+  has_header: true
+  encoding: "utf-8"
+  null_values: ["", "NULL", "null", "None"]
+```
+
+### 3.6 DuckDB PostgreSQL 插件集成
+
+ETL 系统使用 DuckDB 的 PostgreSQL 扩展实现高性能数据操作：
+
+```mermaid
+flowchart LR
+    subgraph DuckDB["DuckDB In-Memory"]
+        CSV["CSV 数据"] --> TempTable["临时表"]
+        TempTable --> Query["SQL 查询"]
+    end
+
+    subgraph PG["PostgreSQL (via pg 扩展)"]
+        Asset["pg.asset"]
+        Trade["pg.trade"]
+    end
+
+    Query --> |attach_postgres| Asset
+    Query --> |upsert_to_postgres| Trade
+    Asset --> |query_asset_statistics| Stats["统计结果"]
+```
+
+**初始化流程:**
+
+```python
+class ETLPipeline:
+    def __init__(self, config: DictConfig) -> None:
+        # 1. 创建 DuckDB 内存客户端
+        self._duckdb = DuckDBClient()
+
+        # 2. 安装并加载 postgres 扩展，附加 PostgreSQL 数据库
+        self._duckdb.attach_postgres(config.db.url)
+        # 执行: INSTALL postgres; LOAD postgres;
+        # 执行: ATTACH 'postgresql://...' AS pg (TYPE POSTGRES)
+```
+
+**attach_postgres 实现:**
+
+```python
+def attach_postgres(self, database_url: str) -> None:
+    if self._pg_attached:
+        return
+
+    # 安装并加载 postgres 扩展
+    self._conn.execute("INSTALL postgres")
+    self._conn.execute("LOAD postgres")
+
+    # 附加 PostgreSQL 数据库，别名为 'pg'
+    self._conn.execute(f"ATTACH '{database_url}' AS pg (TYPE POSTGRES)")
+    self._pg_attached = True
+```
+
+**通过 DuckDB 查询 PostgreSQL 数据:**
+
+```python
+def query_asset_statistics(self) -> dict[str, Any]:
+    """通过 DuckDB 直接查询 PostgreSQL 中的数据"""
+    overall_sql = """
+        SELECT
+            COUNT(*) as total_records,
+            COALESCE(SUM(cash), 0) as total_cash,
+            COALESCE(SUM(total_asset), 0) as total_assets,
+            COALESCE(AVG(total_asset), 0) as avg_total_asset
+        FROM pg.asset  -- 直接查询 PostgreSQL 表
+    """
+    overall = self._conn.execute(overall_sql).fetchone()
+
+    # 按 account_type 分组统计
+    by_type_sql = """
+        SELECT account_type, COUNT(*), SUM(total_asset), AVG(total_asset)
+        FROM pg.asset
+        GROUP BY account_type
+    """
+    # ...
+```
+
+**统计分析使用 DuckDB 的优势:**
+
+| 特性 | 说明 |
+|------|------|
+| **跨数据源查询** | 同时访问内存数据 (Polars) 和远程数据库 (PostgreSQL) |
+| **高性能聚合** | DuckDB 的列式引擎优化复杂聚合计算 |
+| **减少数据传输** | 统计计算在 DuckDB 侧完成，只传输结果 |
+| **统一 SQL 接口** | 使用标准 SQL 完成数据加载和分析 |
 
 ## 4. 数据流设计
 

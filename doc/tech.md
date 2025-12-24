@@ -15,18 +15,156 @@
 - 测试框架：pytest
 
 ## 数据管道
+
+### ExtractorService - 数据提取
 - CSV 数据来源：S3（可通过 MinIO 模拟）
-- 数据提取：ExtractorService 用 Hydra 管理 CSV 格式定义，使用 Polars 进行格式转换
-- 数据验证：DuckDB 导入 + Pandera 进行字段级和业务规则校验
-- 数据写入：LoaderService 使用 DuckDB 的 PostgreSQL 插件进行批量 UPSERT
-- 数据分析：AnalyticsService 用 DuckDB 读取已入库数据进行统计分析
+- **双模式提取**：
+  - **配置驱动模式**：使用 `configs/extractor/default.yaml` 定义列映射，Polars 进行类型转换
+  - **DuckDB 自动模式**：使用 `load_csv_bytes()` + SQL CAST 进行类型转换
+- 模式选择：如果 Hydra config 包含 `extractor.assets/trades` 配置则使用配置驱动，否则回退到 DuckDB
+
+### ValidatorService - 数据验证
+- **Pandera Schema 验证**：使用 `@pa.dataframe_check` 装饰器
+  - 接收 `PolarsData` 参数，返回 `pl.LazyFrame`
+  - 使用 `data.lazyframe.select()` 进行列式计算
+- **外键验证**：Trade 的 `account_id` 必须存在于已加载的 Asset 表中
+- **验证容差**：`DEFAULT_TOLERANCE = 0.01`（处理浮点数精度问题）
+
+### LoaderService - 数据写入
+- 使用 DuckDB 的 PostgreSQL 插件进行批量 UPSERT
+- **UPDATE + INSERT 分离策略**：
+  1. 注册 DataFrame 为 DuckDB 临时表
+  2. UPDATE 已存在的记录
+  3. INSERT 新记录（使用 NOT EXISTS 过滤）
+- 原因：避免外键约束下 ON CONFLICT 的死锁问题
+
+### AnalyticsService - 数据分析
+- 用 DuckDB 直接查询 PostgreSQL 中的已入库数据（`pg.asset`, `pg.trade`）
+- 支持多维度聚合：按 account_type、strategy_name、offset_flag 分组
 
 ## 必须遵守的约束
 - 资产表、交易表必须用 SQLModel 定义
 - 数据库操作的所有类必须有单元测试
-- 金额相关的字段禁止使用 float ，统一使用 Decimal
+- 金额相关的字段禁止使用 float ，统一使用 Decimal（数据库层）
 - 所有时间字段统一使用 UTC
 - 所有配置集中在 pyproject.toml 与 Hydra
+
+### Pandera Schema 约束
+- 必须使用 `@pa.dataframe_check` 装饰器进行业务规则验证
+- 验证方法必须接收 `PolarsData` 参数，返回 `pl.LazyFrame`
+- 计算字段验证容差：`DEFAULT_TOLERANCE = 0.01`
+
+### 时间戳格式
+- CSV 解析格式：`%Y-%m-%dT%H:%M:%S%.f`（ISO 8601 带微秒）
+- DuckDB CSV 导入格式：`timestampformat='%Y-%m-%dT%H:%M:%S'`
+
+## 配置文件结构
+
+```
+configs/
+├── config.yaml           # 主配置入口
+├── db/
+│   ├── dev.yaml          # 开发环境: etl_db
+│   └── test.yaml         # 测试环境: etl_test_db
+├── s3/
+│   └── dev.yaml          # MinIO 配置
+├── etl/
+│   └── default.yaml      # batch_size, validation.tolerance
+├── extractor/
+│   └── default.yaml      # CSV 列映射配置
+└── scheduler/
+    └── default.yaml      # 定时任务配置
+```
+
+### extractor 配置格式
+```yaml
+assets:
+  columns:
+    - name: account_id        # 目标列名
+      csv_name: account_id    # CSV 原始列名
+      dtype: Utf8             # Polars 数据类型: Int32, Int64, Float64, Utf8, Datetime
+      nullable: false
+    - name: updated_at
+      csv_name: updated_at
+      dtype: Datetime
+      format: "%Y-%m-%dT%H:%M:%S%.f"  # Datetime 格式（可选）
+      nullable: false
+
+csv_options:
+  delimiter: ","
+  has_header: true
+  encoding: "utf-8"
+  null_values: ["", "NULL", "null", "None"]
+```
+
+### scheduler 配置格式
+```yaml
+enabled: true
+check_interval: 1  # 秒
+jobs:
+  - job_id: daily_full_etl
+    command: run          # run | assets | trades
+    interval: day         # day | hour | minute
+    at: "02:00"          # 仅 day 有效
+    enabled: true
+```
+
+## 测试规范
+
+### 测试结构
+```
+tests/
+├── conftest.py              # 共享 fixtures
+├── unit/                    # 单元测试（无外部依赖）
+│   ├── test_analytics.py
+│   ├── test_duckdb.py
+│   ├── test_models.py
+│   ├── test_pipeline.py
+│   └── test_validator.py
+└── integration/             # 集成测试（需要 PostgreSQL/MinIO）
+    └── test_full_pipeline.py
+```
+
+### 集成测试容器管理
+- 使用 Podman 管理 PostgreSQL 和 MinIO 容器
+- `conftest.py` 中的 session-scoped fixtures 自动启动/停止容器
+- 测试数据库：`etl_test_db`
+
+### 常用 Fixtures
+```python
+@pytest.fixture
+def test_db_engine():
+    """测试数据库引擎 - 自动创建数据库和表"""
+
+@pytest.fixture
+def sample_asset_data() -> pl.DataFrame:
+    """有效资产数据样本"""
+
+@pytest.fixture
+def invalid_asset_data() -> pl.DataFrame:
+    """无效资产数据样本（用于验证测试）"""
+```
+
+## 错误处理规范
+
+### ValidationError 结构
+```python
+@dataclass
+class ValidationError:
+    row_index: int      # 错误行索引
+    field: str          # 错误字段名
+    message: str        # 错误描述
+    value: str | None   # 错误值
+```
+
+### CLI 退出码
+| 退出码 | 含义 |
+|--------|------|
+| 0 | 成功 |
+| 1 | 一般错误 |
+| 2 | 参数错误 |
+| 3 | 连接错误 (S3/DB) |
+| 4 | 验证错误 (有无效数据) |
 
 ## 文档规范
 
