@@ -1,12 +1,13 @@
-"""Validator service for data validation."""
+"""Validator service for data validation using Pandera schemas."""
 
 import logging
 from dataclasses import dataclass, field
-from decimal import Decimal
 
+import pandera.errors
+import pandera.polars as pa
 import polars as pl
 
-from small_etl.domain.enums import VALID_ACCOUNT_TYPES, VALID_DIRECTIONS, VALID_OFFSET_FLAGS
+from small_etl.domain.schemas import AssetSchema, TradeSchema
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +53,157 @@ class ValidationResult:
 
 
 class ValidatorService:
-    """Service for validating asset and trade data.
+    """Service for validating asset and trade data using Pandera schemas.
 
     Args:
         tolerance: Tolerance for calculated field comparisons (default: 0.01).
+                   Note: Currently not used as schemas use DEFAULT_TOLERANCE.
     """
 
     def __init__(self, tolerance: float = 0.01) -> None:
-        self._tolerance = Decimal(str(tolerance))
+        self._tolerance = tolerance
+
+    def _parse_pandera_errors(
+        self, schema_errors: pandera.errors.SchemaErrors
+    ) -> tuple[list[ValidationError], set[int]]:
+        """Parse Pandera SchemaErrors into ValidationError list.
+
+        Args:
+            schema_errors: Pandera schema validation errors.
+
+        Returns:
+            Tuple of (list of ValidationError, set of invalid row indices).
+        """
+        errors: list[ValidationError] = []
+        invalid_indices: set[int] = set()
+
+        # failure_cases is a DataFrame with columns: schema_context, column, check, check_number, failure_case, index
+        failure_cases = schema_errors.failure_cases
+        if failure_cases is None or len(failure_cases) == 0:
+            return errors, invalid_indices
+
+        for row in failure_cases.iter_rows(named=True):
+            row_idx = row.get("index")
+            column = row.get("column")
+            check = row.get("check")
+            failure_case = row.get("failure_case")
+            schema_context = row.get("schema_context")
+
+            # For dataframe-level checks, extract field name from check name
+            # e.g., "total_asset_equals_sum" -> "total_asset"
+            # e.g., "traded_amount_equals_product" -> "traded_amount"
+            field = str(column) if column is not None else "unknown"
+            if schema_context == "DataFrameSchema" and check:
+                # Extract first part of check name as field name
+                check_str = str(check)
+                if "_equals_" in check_str:
+                    field = check_str.split("_equals_")[0]
+                elif "_" in check_str:
+                    field = check_str.split("_")[0]
+
+            if row_idx is not None:
+                invalid_indices.add(int(row_idx))
+                errors.append(
+                    ValidationError(
+                        row_index=int(row_idx),
+                        field=field,
+                        message=f"Failed check: {check}",
+                        value=str(failure_case) if failure_case is not None else None,
+                    )
+                )
+            else:
+                # DataFrame-level check failure without row index
+                errors.append(
+                    ValidationError(
+                        row_index=-1,
+                        field=field,
+                        message=f"Failed check: {check}",
+                        value=str(failure_case) if failure_case is not None else None,
+                    )
+                )
+
+        return errors, invalid_indices
+
+    def _validate_with_schema(
+        self,
+        df: pl.DataFrame,
+        schema: type[pa.DataFrameModel],
+        data_type: str,
+    ) -> ValidationResult:
+        """Validate DataFrame using a Pandera schema.
+
+        Args:
+            df: DataFrame to validate.
+            schema: Pandera DataFrameModel class.
+            data_type: Type of data being validated (for logging).
+
+        Returns:
+            ValidationResult with valid/invalid rows and errors.
+        """
+        logger.info(f"Validating {len(df)} {data_type} records with Pandera")
+        total_rows = len(df)
+
+        if total_rows == 0:
+            return ValidationResult(
+                is_valid=True,
+                valid_rows=df,
+                invalid_rows=df.clear(),
+                errors=[],
+                total_rows=0,
+                valid_count=0,
+                invalid_count=0,
+            )
+
+        # Add original row index before validation
+        df_with_index = df.with_row_index("_original_index")
+
+        try:
+            # lazy=True collects all errors instead of failing on first
+            schema.validate(df_with_index, lazy=True)
+            # All rows passed validation
+            logger.info(f"Validation complete: {total_rows} valid, 0 invalid")
+            return ValidationResult(
+                is_valid=True,
+                valid_rows=df,
+                invalid_rows=df.clear(),
+                errors=[],
+                total_rows=total_rows,
+                valid_count=total_rows,
+                invalid_count=0,
+            )
+        except pandera.errors.SchemaErrors as e:
+            # Parse errors and separate valid/invalid rows
+            errors, invalid_indices = self._parse_pandera_errors(e)
+
+            if invalid_indices:
+                valid_rows = df_with_index.filter(~pl.col("_original_index").is_in(list(invalid_indices))).drop(
+                    "_original_index"
+                )
+                invalid_rows = df_with_index.filter(pl.col("_original_index").is_in(list(invalid_indices))).drop(
+                    "_original_index"
+                )
+            else:
+                # DataFrame-level check failed but no row-level indices
+                # Mark all rows as invalid for safety
+                valid_rows = df.clear()
+                invalid_rows = df
+
+            valid_count = len(valid_rows)
+            invalid_count = len(invalid_rows)
+
+            logger.info(f"Validation complete: {valid_count} valid, {invalid_count} invalid")
+            return ValidationResult(
+                is_valid=False,
+                valid_rows=valid_rows,
+                invalid_rows=invalid_rows,
+                errors=errors,
+                total_rows=total_rows,
+                valid_count=valid_count,
+                invalid_count=invalid_count,
+            )
 
     def validate_assets(self, df: pl.DataFrame) -> ValidationResult:
-        """Validate asset data.
+        """Validate asset data using Pandera AssetSchema.
 
         Validates:
             - Required fields presence
@@ -76,77 +217,10 @@ class ValidatorService:
         Returns:
             ValidationResult with valid/invalid rows and errors.
         """
-        logger.info(f"Validating {len(df)} asset records")
-        errors: list[ValidationError] = []
-
-        # Add original row index before filtering
-        df = df.with_row_index("_original_index")
-
-        valid_mask = pl.lit(True)
-
-        valid_mask = valid_mask & df["account_id"].is_not_null() & (df["account_id"].str.len_chars() > 0)
-
-        valid_mask = valid_mask & df["account_type"].is_in(list(VALID_ACCOUNT_TYPES))
-
-        valid_mask = valid_mask & (df["cash"] >= 0)
-        valid_mask = valid_mask & (df["frozen_cash"] >= 0)
-        valid_mask = valid_mask & (df["market_value"] >= 0)
-        valid_mask = valid_mask & (df["total_asset"] >= 0)
-
-        df_with_calc = df.with_columns((pl.col("cash") + pl.col("frozen_cash") + pl.col("market_value")).alias("calc_total"))
-        diff = (df_with_calc["total_asset"] - df_with_calc["calc_total"]).abs().cast(pl.Float64)
-        valid_mask = valid_mask & (diff <= float(self._tolerance))
-
-        valid_mask = valid_mask & df["updated_at"].is_not_null()
-
-        valid_rows = df.filter(valid_mask).drop("_original_index")
-        invalid_rows = df.filter(~valid_mask)
-
-        for row in invalid_rows.iter_rows(named=True):
-            original_idx = int(row["_original_index"])
-            if not row.get("account_id"):
-                errors.append(ValidationError(original_idx, "account_id", "account_id is required"))
-            if row.get("account_type") not in VALID_ACCOUNT_TYPES:
-                errors.append(ValidationError(original_idx, "account_type", f"Invalid account_type: {row.get('account_type')}", str(row.get("account_type"))))
-            if row.get("cash", 0) < 0:
-                errors.append(ValidationError(original_idx, "cash", "cash must be >= 0", str(row.get("cash"))))
-            if row.get("frozen_cash", 0) < 0:
-                errors.append(ValidationError(original_idx, "frozen_cash", "frozen_cash must be >= 0", str(row.get("frozen_cash"))))
-            if row.get("market_value", 0) < 0:
-                errors.append(ValidationError(original_idx, "market_value", "market_value must be >= 0", str(row.get("market_value"))))
-
-            cash = Decimal(str(row.get("cash", 0)))
-            frozen = Decimal(str(row.get("frozen_cash", 0)))
-            market = Decimal(str(row.get("market_value", 0)))
-            total = Decimal(str(row.get("total_asset", 0)))
-            calc_total = cash + frozen + market
-            if abs(total - calc_total) > self._tolerance:
-                errors.append(
-                    ValidationError(
-                        original_idx,
-                        "total_asset",
-                        f"total_asset mismatch: expected {calc_total}, got {total}",
-                        str(total),
-                    )
-                )
-
-        invalid_rows = invalid_rows.drop("_original_index")
-
-        result = ValidationResult(
-            is_valid=len(invalid_rows) == 0,
-            valid_rows=valid_rows,
-            invalid_rows=invalid_rows,
-            errors=errors,
-            total_rows=len(df),
-            valid_count=len(valid_rows),
-            invalid_count=len(invalid_rows),
-        )
-
-        logger.info(f"Validation complete: {result.valid_count} valid, {result.invalid_count} invalid")
-        return result
+        return self._validate_with_schema(df, AssetSchema, "asset")
 
     def validate_trades(self, df: pl.DataFrame, valid_account_ids: set[str] | None = None) -> ValidationResult:
-        """Validate trade data.
+        """Validate trade data using Pandera TradeSchema.
 
         Validates:
             - Required fields presence
@@ -163,91 +237,63 @@ class ValidatorService:
         Returns:
             ValidationResult with valid/invalid rows and errors.
         """
-        logger.info(f"Validating {len(df)} trade records")
-        errors: list[ValidationError] = []
+        # First validate with Pandera schema
+        result = self._validate_with_schema(df, TradeSchema, "trade")
 
-        # Add original row index before filtering
-        df = df.with_row_index("_original_index")
+        # If valid_account_ids provided and there are valid rows, validate foreign keys
+        if valid_account_ids and result.valid_count > 0:
+            result = self._validate_foreign_keys(result, valid_account_ids)
 
-        valid_mask = pl.lit(True)
-
-        valid_mask = valid_mask & df["account_id"].is_not_null() & (df["account_id"].str.len_chars() > 0)
-        valid_mask = valid_mask & df["traded_id"].is_not_null() & (df["traded_id"].str.len_chars() > 0)
-        valid_mask = valid_mask & df["stock_code"].is_not_null() & (df["stock_code"].str.len_chars() > 0)
-        valid_mask = valid_mask & df["strategy_name"].is_not_null() & (df["strategy_name"].str.len_chars() > 0)
-
-        valid_mask = valid_mask & df["account_type"].is_in(list(VALID_ACCOUNT_TYPES))
-        valid_mask = valid_mask & df["direction"].is_in(list(VALID_DIRECTIONS))
-        valid_mask = valid_mask & df["offset_flag"].is_in(list(VALID_OFFSET_FLAGS))
-
-        valid_mask = valid_mask & (df["traded_price"] > 0)
-        valid_mask = valid_mask & (df["traded_volume"] > 0)
-        valid_mask = valid_mask & (df["traded_amount"] > 0)
-
-        df_with_calc = df.with_columns((pl.col("traded_price") * pl.col("traded_volume")).alias("calc_amount"))
-        diff = (df_with_calc["traded_amount"] - df_with_calc["calc_amount"]).abs().cast(pl.Float64)
-        valid_mask = valid_mask & (diff <= float(self._tolerance))
-
-        valid_mask = valid_mask & df["traded_time"].is_not_null()
-        valid_mask = valid_mask & df["created_at"].is_not_null()
-        valid_mask = valid_mask & df["updated_at"].is_not_null()
-
-        if valid_account_ids:
-            valid_mask = valid_mask & df["account_id"].cast(pl.Utf8).is_in(list(valid_account_ids))
-
-        valid_rows = df.filter(valid_mask).drop("_original_index")
-        invalid_rows = df.filter(~valid_mask)
-
-        for row in invalid_rows.iter_rows(named=True):
-            original_idx = int(row["_original_index"])
-            if not row.get("traded_id"):
-                errors.append(ValidationError(original_idx, "traded_id", "traded_id is required"))
-            if row.get("account_type") not in VALID_ACCOUNT_TYPES:
-                errors.append(ValidationError(original_idx, "account_type", f"Invalid account_type: {row.get('account_type')}", str(row.get("account_type"))))
-            if row.get("direction") not in VALID_DIRECTIONS:
-                errors.append(ValidationError(original_idx, "direction", f"Invalid direction: {row.get('direction')}", str(row.get("direction"))))
-            if row.get("offset_flag") not in VALID_OFFSET_FLAGS:
-                errors.append(ValidationError(original_idx, "offset_flag", f"Invalid offset_flag: {row.get('offset_flag')}", str(row.get("offset_flag"))))
-            if row.get("traded_price", 0) <= 0:
-                errors.append(ValidationError(original_idx, "traded_price", "traded_price must be > 0", str(row.get("traded_price"))))
-            if row.get("traded_volume", 0) <= 0:
-                errors.append(ValidationError(original_idx, "traded_volume", "traded_volume must be > 0", str(row.get("traded_volume"))))
-
-            price = Decimal(str(row.get("traded_price", 0)))
-            volume = int(row.get("traded_volume", 0))
-            amount = Decimal(str(row.get("traded_amount", 0)))
-            calc_amount = price * volume
-            if abs(amount - calc_amount) > self._tolerance:
-                errors.append(
-                    ValidationError(
-                        original_idx,
-                        "traded_amount",
-                        f"traded_amount mismatch: expected {calc_amount}, got {amount}",
-                        str(amount),
-                    )
-                )
-
-            if valid_account_ids and str(row.get("account_id")) not in valid_account_ids:
-                errors.append(
-                    ValidationError(
-                        original_idx,
-                        "account_id",
-                        f"account_id not found in asset table: {row.get('account_id')}",
-                        str(row.get("account_id")),
-                    )
-                )
-
-        invalid_rows = invalid_rows.drop("_original_index")
-
-        result = ValidationResult(
-            is_valid=len(invalid_rows) == 0,
-            valid_rows=valid_rows,
-            invalid_rows=invalid_rows,
-            errors=errors,
-            total_rows=len(df),
-            valid_count=len(valid_rows),
-            invalid_count=len(invalid_rows),
-        )
-
-        logger.info(f"Validation complete: {result.valid_count} valid, {result.invalid_count} invalid")
         return result
+
+    def _validate_foreign_keys(
+        self, result: ValidationResult, valid_account_ids: set[str]
+    ) -> ValidationResult:
+        """Validate foreign key constraints on valid rows.
+
+        Args:
+            result: Current validation result.
+            valid_account_ids: Set of valid account IDs.
+
+        Returns:
+            Updated ValidationResult with foreign key validation applied.
+        """
+        valid_rows = result.valid_rows
+        if len(valid_rows) == 0:
+            return result
+
+        # Add index for tracking
+        valid_rows_indexed = valid_rows.with_row_index("_fk_index")
+
+        # Find rows with invalid account_ids
+        fk_valid_mask = valid_rows_indexed["account_id"].cast(pl.Utf8).is_in(list(valid_account_ids))
+        invalid_fk_rows = valid_rows_indexed.filter(~fk_valid_mask)
+
+        if len(invalid_fk_rows) == 0:
+            return result
+
+        # Create errors for foreign key violations
+        fk_errors: list[ValidationError] = []
+        for row in invalid_fk_rows.iter_rows(named=True):
+            fk_errors.append(
+                ValidationError(
+                    row_index=int(row["_fk_index"]),
+                    field="account_id",
+                    message=f"account_id not found in asset table: {row.get('account_id')}",
+                    value=str(row.get("account_id")),
+                )
+            )
+
+        # Update valid/invalid rows
+        new_valid_rows = valid_rows_indexed.filter(fk_valid_mask).drop("_fk_index")
+        new_invalid_rows = pl.concat([result.invalid_rows, invalid_fk_rows.drop("_fk_index")])
+
+        return ValidationResult(
+            is_valid=len(new_valid_rows) == result.total_rows,
+            valid_rows=new_valid_rows,
+            invalid_rows=new_invalid_rows,
+            errors=result.errors + fk_errors,
+            total_rows=result.total_rows,
+            valid_count=len(new_valid_rows),
+            invalid_count=len(new_invalid_rows),
+        )
