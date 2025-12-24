@@ -89,7 +89,10 @@ class ETLPipeline:
             duckdb_client=self._duckdb,
             database_url=config.db.url,
         )
-        self._analytics = AnalyticsService(repository=self._repo)
+        self._analytics = AnalyticsService(repository=self._repo, duckdb_client=self._duckdb)
+
+        # Attach PostgreSQL to DuckDB for analytics
+        self._duckdb.attach_postgres(config.db.url)
 
         logger.info("ETLPipeline initialized")
 
@@ -148,12 +151,15 @@ class ETLPipeline:
             if not trades_load.success:
                 raise RuntimeError(f"Trade loading failed: {trades_load.error_message}")
 
-            logger.info("=== Phase 7: Compute Analytics from Database ===")
+            logger.info("=== Phase 7: Compute Analytics from Database (via DuckDB) ===")
             assets_stats = self._analytics.asset_statistics_from_db()
             trades_stats = self._analytics.trade_statistics_from_db()
 
             completed_at = _utc_now()
             duration = (completed_at - started_at).total_seconds()
+            logger.info("--- ETL statistics ---")
+            logger.info(f"Asset statistics: \n{assets_stats}")
+            logger.info(f"Trade statistics: \n{trades_stats}")
             logger.info(f"ETL pipeline completed successfully in {duration:.2f}s")
 
             return PipelineResult(

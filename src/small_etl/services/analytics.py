@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 if TYPE_CHECKING:
+    from small_etl.data_access.duckdb_client import DuckDBClient
     from small_etl.data_access.postgres_repository import PostgresRepository
 
 logger = logging.getLogger(__name__)
@@ -71,10 +72,18 @@ class AnalyticsService:
     Args:
         repository: Optional PostgresRepository for database queries.
                    If provided, enables statistics from database.
+        duckdb_client: Optional DuckDBClient for statistics via DuckDB.
+                      If provided with attached PostgreSQL, enables efficient
+                      aggregation queries directly on the database.
     """
 
-    def __init__(self, repository: PostgresRepository | None = None) -> None:
+    def __init__(
+        self,
+        repository: PostgresRepository | None = None,
+        duckdb_client: DuckDBClient | None = None,
+    ) -> None:
         self._repo = repository
+        self._duckdb = duckdb_client
 
     def asset_statistics(self, df: pl.DataFrame) -> AssetStatistics:
         """Compute statistics for asset data.
@@ -220,14 +229,39 @@ class AnalyticsService:
     def asset_statistics_from_db(self) -> AssetStatistics:
         """Compute statistics from database records.
 
+        Uses DuckDB if available for efficient aggregation queries,
+        otherwise falls back to loading all data via repository.
+
         Returns:
             AssetStatistics computed from database.
 
         Raises:
-            ValueError: If repository is not configured.
+            ValueError: If neither duckdb_client nor repository is configured.
         """
+        if self._duckdb is not None:
+            logger.info("Computing asset statistics via DuckDB")
+            stats = self._duckdb.query_asset_statistics()
+            by_account_type = {}
+            for acct_type, data in stats["by_account_type"].items():
+                by_account_type[acct_type] = {
+                    "count": data["count"],
+                    "sum_cash": Decimal(str(data["sum_cash"])),
+                    "sum_total": Decimal(str(data["sum_total"])),
+                    "avg_total": Decimal(str(data["avg_total"])),
+                }
+            return AssetStatistics(
+                total_records=stats["total_records"],
+                total_cash=Decimal(str(stats["total_cash"])),
+                total_frozen_cash=Decimal(str(stats["total_frozen_cash"])),
+                total_market_value=Decimal(str(stats["total_market_value"])),
+                total_assets=Decimal(str(stats["total_assets"])),
+                avg_cash=Decimal(str(stats["avg_cash"])),
+                avg_total_asset=Decimal(str(stats["avg_total_asset"])),
+                by_account_type=by_account_type,
+            )
+
         if self._repo is None:
-            raise ValueError("Repository not configured for database statistics")
+            raise ValueError("Neither DuckDB client nor repository configured for database statistics")
 
         df = self._repo.get_all_assets()
         return self.asset_statistics(df)
@@ -235,14 +269,56 @@ class AnalyticsService:
     def trade_statistics_from_db(self) -> TradeStatistics:
         """Compute statistics from database records.
 
+        Uses DuckDB if available for efficient aggregation queries,
+        otherwise falls back to loading all data via repository.
+
         Returns:
             TradeStatistics computed from database.
 
         Raises:
-            ValueError: If repository is not configured.
+            ValueError: If neither duckdb_client nor repository is configured.
         """
+        if self._duckdb is not None:
+            logger.info("Computing trade statistics via DuckDB")
+            stats = self._duckdb.query_trade_statistics()
+
+            by_account_type = {}
+            for acct_type, data in stats["by_account_type"].items():
+                by_account_type[acct_type] = {
+                    "count": data["count"],
+                    "sum_volume": data["sum_volume"],
+                    "sum_amount": Decimal(str(data["sum_amount"])),
+                }
+
+            by_offset_flag = {}
+            for flag, data in stats["by_offset_flag"].items():
+                by_offset_flag[flag] = {
+                    "count": data["count"],
+                    "sum_volume": data["sum_volume"],
+                    "sum_amount": Decimal(str(data["sum_amount"])),
+                }
+
+            by_strategy = {}
+            for strategy, data in stats["by_strategy"].items():
+                by_strategy[strategy] = {
+                    "count": data["count"],
+                    "sum_volume": data["sum_volume"],
+                    "sum_amount": Decimal(str(data["sum_amount"])),
+                }
+
+            return TradeStatistics(
+                total_records=stats["total_records"],
+                total_volume=stats["total_volume"],
+                total_amount=Decimal(str(stats["total_amount"])),
+                avg_price=Decimal(str(stats["avg_price"])),
+                avg_volume=float(stats["avg_volume"]),
+                by_account_type=by_account_type,
+                by_offset_flag=by_offset_flag,
+                by_strategy=by_strategy,
+            )
+
         if self._repo is None:
-            raise ValueError("Repository not configured for database statistics")
+            raise ValueError("Neither DuckDB client nor repository configured for database statistics")
 
         df = self._repo.get_all_trades()
         return self.trade_statistics(df)

@@ -156,6 +156,190 @@ class DuckDBClient:
         result = self._conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
         return result[0] if result else 0
 
+    def query_asset_statistics(self) -> dict[str, Any]:
+        """Query asset statistics from PostgreSQL via DuckDB.
+
+        Returns:
+            Dictionary with aggregated asset statistics.
+
+        Raises:
+            RuntimeError: If PostgreSQL is not attached.
+        """
+        if not self._pg_attached:
+            raise RuntimeError("PostgreSQL not attached. Call attach_postgres() first.")
+
+        # Overall statistics
+        overall_sql = """
+            SELECT
+                COUNT(*) as total_records,
+                COALESCE(SUM(cash), 0) as total_cash,
+                COALESCE(SUM(frozen_cash), 0) as total_frozen_cash,
+                COALESCE(SUM(market_value), 0) as total_market_value,
+                COALESCE(SUM(total_asset), 0) as total_assets,
+                COALESCE(AVG(cash), 0) as avg_cash,
+                COALESCE(AVG(total_asset), 0) as avg_total_asset
+            FROM pg.asset
+        """
+        overall = self._conn.execute(overall_sql).fetchone()
+        if overall is None:
+            return {
+                "total_records": 0,
+                "total_cash": 0,
+                "total_frozen_cash": 0,
+                "total_market_value": 0,
+                "total_assets": 0,
+                "avg_cash": 0,
+                "avg_total_asset": 0,
+                "by_account_type": {},
+            }
+
+        # Statistics by account type
+        by_type_sql = """
+            SELECT
+                account_type,
+                COUNT(*) as count,
+                COALESCE(SUM(cash), 0) as sum_cash,
+                COALESCE(SUM(total_asset), 0) as sum_total,
+                COALESCE(AVG(total_asset), 0) as avg_total
+            FROM pg.asset
+            GROUP BY account_type
+            ORDER BY account_type
+        """
+        by_type_rows = self._conn.execute(by_type_sql).fetchall()
+
+        by_account_type = {}
+        for row in by_type_rows:
+            by_account_type[row[0]] = {
+                "count": row[1],
+                "sum_cash": row[2],
+                "sum_total": row[3],
+                "avg_total": row[4],
+            }
+
+        logger.info(f"Queried asset statistics via DuckDB: {overall[0]} records")
+
+        return {
+            "total_records": overall[0],
+            "total_cash": overall[1],
+            "total_frozen_cash": overall[2],
+            "total_market_value": overall[3],
+            "total_assets": overall[4],
+            "avg_cash": overall[5],
+            "avg_total_asset": overall[6],
+            "by_account_type": by_account_type,
+        }
+
+    def query_trade_statistics(self) -> dict[str, Any]:
+        """Query trade statistics from PostgreSQL via DuckDB.
+
+        Returns:
+            Dictionary with aggregated trade statistics.
+
+        Raises:
+            RuntimeError: If PostgreSQL is not attached.
+        """
+        if not self._pg_attached:
+            raise RuntimeError("PostgreSQL not attached. Call attach_postgres() first.")
+
+        # Overall statistics
+        overall_sql = """
+            SELECT
+                COUNT(*) as total_records,
+                COALESCE(SUM(traded_volume), 0) as total_volume,
+                COALESCE(SUM(traded_amount), 0) as total_amount,
+                COALESCE(AVG(traded_price), 0) as avg_price,
+                COALESCE(AVG(traded_volume), 0) as avg_volume
+            FROM pg.trade
+        """
+        overall = self._conn.execute(overall_sql).fetchone()
+        if overall is None:
+            return {
+                "total_records": 0,
+                "total_volume": 0,
+                "total_amount": 0,
+                "avg_price": 0,
+                "avg_volume": 0,
+                "by_account_type": {},
+                "by_offset_flag": {},
+                "by_strategy": {},
+            }
+
+        # Statistics by account type
+        by_type_sql = """
+            SELECT
+                account_type,
+                COUNT(*) as count,
+                COALESCE(SUM(traded_volume), 0) as sum_volume,
+                COALESCE(SUM(traded_amount), 0) as sum_amount
+            FROM pg.trade
+            GROUP BY account_type
+            ORDER BY account_type
+        """
+        by_type_rows = self._conn.execute(by_type_sql).fetchall()
+
+        by_account_type = {}
+        for row in by_type_rows:
+            by_account_type[row[0]] = {
+                "count": row[1],
+                "sum_volume": row[2],
+                "sum_amount": row[3],
+            }
+
+        # Statistics by offset flag
+        by_flag_sql = """
+            SELECT
+                offset_flag,
+                COUNT(*) as count,
+                COALESCE(SUM(traded_volume), 0) as sum_volume,
+                COALESCE(SUM(traded_amount), 0) as sum_amount
+            FROM pg.trade
+            GROUP BY offset_flag
+            ORDER BY offset_flag
+        """
+        by_flag_rows = self._conn.execute(by_flag_sql).fetchall()
+
+        by_offset_flag = {}
+        for row in by_flag_rows:
+            by_offset_flag[row[0]] = {
+                "count": row[1],
+                "sum_volume": row[2],
+                "sum_amount": row[3],
+            }
+
+        # Statistics by strategy
+        by_strategy_sql = """
+            SELECT
+                strategy_name,
+                COUNT(*) as count,
+                COALESCE(SUM(traded_volume), 0) as sum_volume,
+                COALESCE(SUM(traded_amount), 0) as sum_amount
+            FROM pg.trade
+            GROUP BY strategy_name
+            ORDER BY strategy_name
+        """
+        by_strategy_rows = self._conn.execute(by_strategy_sql).fetchall()
+
+        by_strategy = {}
+        for row in by_strategy_rows:
+            by_strategy[row[0]] = {
+                "count": row[1],
+                "sum_volume": row[2],
+                "sum_amount": row[3],
+            }
+
+        logger.info(f"Queried trade statistics via DuckDB: {overall[0]} records")
+
+        return {
+            "total_records": overall[0],
+            "total_volume": overall[1],
+            "total_amount": overall[2],
+            "avg_price": overall[3],
+            "avg_volume": overall[4],
+            "by_account_type": by_account_type,
+            "by_offset_flag": by_offset_flag,
+            "by_strategy": by_strategy,
+        }
+
     def close(self) -> None:
         """Close the DuckDB connection."""
         self._conn.close()
