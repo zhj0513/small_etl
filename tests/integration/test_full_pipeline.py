@@ -57,6 +57,37 @@ def integration_config():
                 "batch_size": 100,
                 "validation": {"tolerance": 0.01},
             },
+            "extractor": {
+                "assets": {
+                    "columns": [
+                        {"name": "account_id", "csv_name": "account_id", "dtype": "Utf8"},
+                        {"name": "account_type", "csv_name": "account_type", "dtype": "Int32"},
+                        {"name": "cash", "csv_name": "cash", "dtype": "Float64"},
+                        {"name": "frozen_cash", "csv_name": "frozen_cash", "dtype": "Float64"},
+                        {"name": "market_value", "csv_name": "market_value", "dtype": "Float64"},
+                        {"name": "total_asset", "csv_name": "total_asset", "dtype": "Float64"},
+                        {"name": "updated_at", "csv_name": "updated_at", "dtype": "Datetime", "format": "%Y-%m-%dT%H:%M:%S%.f"},
+                    ]
+                },
+                "trades": {
+                    "columns": [
+                        {"name": "account_id", "csv_name": "account_id", "dtype": "Utf8"},
+                        {"name": "account_type", "csv_name": "account_type", "dtype": "Int32"},
+                        {"name": "traded_id", "csv_name": "traded_id", "dtype": "Utf8"},
+                        {"name": "stock_code", "csv_name": "stock_code", "dtype": "Utf8"},
+                        {"name": "traded_time", "csv_name": "traded_time", "dtype": "Datetime", "format": "%Y-%m-%dT%H:%M:%S%.f"},
+                        {"name": "traded_price", "csv_name": "traded_price", "dtype": "Float64"},
+                        {"name": "traded_volume", "csv_name": "traded_volume", "dtype": "Int64"},
+                        {"name": "traded_amount", "csv_name": "traded_amount", "dtype": "Float64"},
+                        {"name": "strategy_name", "csv_name": "strategy_name", "dtype": "Utf8"},
+                        {"name": "order_remark", "csv_name": "order_remark", "dtype": "Utf8"},
+                        {"name": "direction", "csv_name": "direction", "dtype": "Int32"},
+                        {"name": "offset_flag", "csv_name": "offset_flag", "dtype": "Int32"},
+                        {"name": "created_at", "csv_name": "created_at", "dtype": "Datetime", "format": "%Y-%m-%dT%H:%M:%S%.f"},
+                        {"name": "updated_at", "csv_name": "updated_at", "dtype": "Datetime", "format": "%Y-%m-%dT%H:%M:%S%.f"},
+                    ]
+                },
+            },
         }
     )
 

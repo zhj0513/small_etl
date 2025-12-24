@@ -44,12 +44,13 @@ class DuckDBClient:
     def upsert_to_postgres(self, df: pl.DataFrame, table_name: str, conflict_column: str) -> int:
         """Upsert DataFrame to PostgreSQL table using DuckDB postgres extension.
 
-        Uses INSERT ... ON CONFLICT DO UPDATE for efficient bulk upsert.
+        Uses DELETE + INSERT pattern for efficient bulk upsert, as DuckDB's postgres
+        extension has issues with INSERT...ON CONFLICT when the table has auto-increment columns.
 
         Args:
             df: Polars DataFrame to upsert.
             table_name: Target PostgreSQL table name.
-            conflict_column: Column name for conflict detection (primary key).
+            conflict_column: Column name for conflict detection (unique key).
 
         Returns:
             Number of rows upserted.
@@ -64,25 +65,24 @@ class DuckDBClient:
         temp_table = f"_temp_{table_name}"
         self._conn.register(temp_table, df.to_arrow())
 
-        # Get column names excluding the conflict column for UPDATE SET clause
-        columns = df.columns
-        update_columns = [c for c in columns if c != conflict_column]
-
         # Build column list for INSERT
+        columns = df.columns
         columns_str = ", ".join(columns)
         values_str = ", ".join([f'"{c}"' for c in columns])
 
-        # Build UPDATE SET clause
-        update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_columns])
+        # Delete existing rows that match the conflict column
+        delete_sql = f"""
+            DELETE FROM pg.{table_name}
+            WHERE {conflict_column} IN (SELECT "{conflict_column}" FROM {temp_table})
+        """
+        self._conn.execute(delete_sql)
 
-        # Execute upsert using INSERT ... ON CONFLICT
-        sql = f"""
+        # Insert all rows
+        insert_sql = f"""
             INSERT INTO pg.{table_name} ({columns_str})
             SELECT {values_str} FROM {temp_table}
-            ON CONFLICT ({conflict_column}) DO UPDATE SET {update_set}
         """
-
-        self._conn.execute(sql)
+        self._conn.execute(insert_sql)
 
         # Unregister temp table
         self._conn.unregister(temp_table)
