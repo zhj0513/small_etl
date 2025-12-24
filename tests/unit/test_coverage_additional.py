@@ -1,69 +1,14 @@
-"""Additional tests for s3_connector, analytics, and validator to improve coverage."""
+"""Additional tests for analytics, and validator to improve coverage."""
 
 from datetime import datetime
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
 
-from small_etl.data_access.s3_connector import S3Connector
 from small_etl.services.analytics import AnalyticsService
 from small_etl.services.validator import ValidatorService
-
-
-class TestS3Connector:
-    """Tests for S3Connector."""
-
-    def test_download_csv_to_stream(self):
-        """Test download_csv_to_stream returns BytesIO."""
-        with patch("small_etl.data_access.s3_connector.Minio") as mock_minio_class:
-            mock_client = MagicMock()
-            mock_minio_class.return_value = mock_client
-
-            mock_response = MagicMock()
-            mock_response.read.return_value = b"col1,col2\nval1,val2"
-            mock_client.get_object.return_value = mock_response
-
-            connector = S3Connector("localhost:9000", "access", "secret")
-            result = connector.download_csv_to_stream("bucket", "file.csv")
-
-            assert result.read() == b"col1,col2\nval1,val2"
-
-    def test_list_objects(self):
-        """Test list_objects returns list of object names."""
-        with patch("small_etl.data_access.s3_connector.Minio") as mock_minio_class:
-            mock_client = MagicMock()
-            mock_minio_class.return_value = mock_client
-
-            mock_obj1 = MagicMock()
-            mock_obj1.object_name = "file1.csv"
-            mock_obj2 = MagicMock()
-            mock_obj2.object_name = "file2.csv"
-            mock_obj3 = MagicMock()
-            mock_obj3.object_name = None  # Test filtering None
-
-            mock_client.list_objects.return_value = [mock_obj1, mock_obj2, mock_obj3]
-
-            connector = S3Connector("localhost:9000", "access", "secret")
-            result = connector.list_objects("bucket", prefix="data/")
-
-            assert result == ["file1.csv", "file2.csv"]
-            mock_client.list_objects.assert_called_once_with("bucket", prefix="data/")
-
-    def test_bucket_exists(self):
-        """Test bucket_exists returns boolean."""
-        with patch("small_etl.data_access.s3_connector.Minio") as mock_minio_class:
-            mock_client = MagicMock()
-            mock_minio_class.return_value = mock_client
-
-            mock_client.bucket_exists.return_value = True
-
-            connector = S3Connector("localhost:9000", "access", "secret")
-            assert connector.bucket_exists("existing-bucket") is True
-
-            mock_client.bucket_exists.return_value = False
-            assert connector.bucket_exists("nonexistent") is False
 
 
 class TestAnalyticsServiceDb:

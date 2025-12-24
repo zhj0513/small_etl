@@ -91,7 +91,7 @@ flowchart LR
 - **ValidatorService** (`services/validator.py`): Field-level + business rule validation with Pandera schemas
 - **LoaderService** (`services/loader.py`): Batch loads validated data to PostgreSQL
 - **AnalyticsService** (`services/analytics.py`): Provides statistics and analysis
-- **PostgresRepository** (`data_access/postgres_repository.py`): Bulk upsert with `polars_to_assets()` / `polars_to_trades()`
+- **PostgresRepository** (`data_access/postgres_repository.py`): Database operations (queries, truncate)
 - **DuckDBClient** (`data_access/duckdb_client.py`): In-memory data validation
 - **S3Connector** (`data_access/s3_connector.py`): MinIO/S3 file operations
 

@@ -48,6 +48,3 @@ class Direction(IntEnum):
 VALID_ACCOUNT_TYPES = frozenset(t.value for t in AccountType)
 VALID_OFFSET_FLAGS = frozenset(f.value for f in OffsetFlag)
 VALID_DIRECTIONS = frozenset(d.value for d in Direction)
-
-# Stock-specific offset flags (only buy/sell)
-STOCK_OFFSET_FLAGS = frozenset([OffsetFlag.OPEN, OffsetFlag.CLOSE])

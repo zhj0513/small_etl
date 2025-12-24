@@ -130,41 +130,6 @@ class DuckDBClient:
         result = self._conn.execute(sql)
         return result.pl()
 
-    def to_polars(self, table_name: str) -> pl.DataFrame:
-        """Convert a DuckDB table to Polars DataFrame.
-
-        Args:
-            table_name: Name of the table to convert.
-
-        Returns:
-            Table data as Polars DataFrame.
-        """
-        return self.query(f"SELECT * FROM {table_name}")
-
-    def execute(self, sql: str, params: list[Any] | None = None) -> None:
-        """Execute a SQL statement.
-
-        Args:
-            sql: SQL statement.
-            params: Optional parameters for parameterized queries.
-        """
-        if params:
-            self._conn.execute(sql, params)
-        else:
-            self._conn.execute(sql)
-
-    def get_row_count(self, table_name: str) -> int:
-        """Get row count for a table.
-
-        Args:
-            table_name: Name of the table.
-
-        Returns:
-            Number of rows in the table.
-        """
-        result = self._conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
-        return result[0] if result else 0
-
     def query_asset_statistics(self) -> dict[str, Any]:
         """Query asset statistics from PostgreSQL via DuckDB.
 

@@ -1069,9 +1069,7 @@ flowchart LR
     Polars --> Validate["ValidatorService"]
     Validate --> Valid["有效数据"]
     Validate --> Invalid["无效数据"]
-    Valid --> Convert["polars_to_assets()<br/>polars_to_trades()"]
-    Convert --> Models["Asset/Trade 模型"]
-    Models --> UPSERT["PostgresRepository<br/>upsert_assets/trades()"]
+    Valid --> UPSERT["DuckDBClient<br/>upsert_to_postgres()"]
 ```
 
 ### 4.3 批处理流程
@@ -1083,13 +1081,11 @@ Polars DataFrame (N rows)
      │
      ├─▶ Batch 1 (rows 0 - 9999)
      │        │
-     │        ├─▶ polars_to_assets/trades()
-     │        └─▶ repository.upsert()
+     │        └─▶ duckdb.upsert_to_postgres()
      │
      ├─▶ Batch 2 (rows 10000 - 19999)
      │        │
-     │        ├─▶ polars_to_assets/trades()
-     │        └─▶ repository.upsert()
+     │        └─▶ duckdb.upsert_to_postgres()
      │
      └─▶ Batch N ...
               │
@@ -1152,7 +1148,7 @@ class ValidationError:
 
 ### 6.3 数据转换
 
-- 使用 `polars_to_assets()` / `polars_to_trades()` 批量转换
+- 使用 DuckDB `upsert_to_postgres()` 直接写入数据库
 - Decimal 精度处理: 模型中使用 Decimal，DataFrame 中使用 float
 - None/null 值处理: 可选字段默认 None
 
@@ -1256,7 +1252,7 @@ src/small_etl/
 │   ├── __init__.py
 │   ├── s3_connector.py      # S3Connector (MinIO 客户端)
 │   ├── duckdb_client.py     # DuckDBClient (内存数据库)
-│   ├── postgres_repository.py  # PostgresRepository + polars_to_*()
+│   ├── postgres_repository.py  # PostgresRepository
 │   └── db_setup.py          # 数据库初始化工具
 ├── services/
 │   ├── __init__.py

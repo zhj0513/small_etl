@@ -1,7 +1,6 @@
 """S3/MinIO connector for data extraction."""
 
 import logging
-from io import BytesIO
 
 from minio import Minio
 
@@ -51,40 +50,3 @@ class S3Connector:
             if response:
                 response.close()
                 response.release_conn()
-
-    def download_csv_to_stream(self, bucket: str, object_name: str) -> BytesIO:
-        """Download a CSV file to a BytesIO stream.
-
-        Args:
-            bucket: Bucket name.
-            object_name: Object path within the bucket.
-
-        Returns:
-            BytesIO stream containing CSV content.
-        """
-        data = self.download_csv(bucket, object_name)
-        return BytesIO(data)
-
-    def list_objects(self, bucket: str, prefix: str = "") -> list[str]:
-        """List objects in a bucket with optional prefix.
-
-        Args:
-            bucket: Bucket name.
-            prefix: Object name prefix for filtering.
-
-        Returns:
-            List of object names.
-        """
-        objects = self._client.list_objects(bucket, prefix=prefix)
-        return [obj.object_name for obj in objects if obj.object_name is not None]
-
-    def bucket_exists(self, bucket: str) -> bool:
-        """Check if a bucket exists.
-
-        Args:
-            bucket: Bucket name.
-
-        Returns:
-            True if bucket exists, False otherwise.
-        """
-        return self._client.bucket_exists(bucket)
