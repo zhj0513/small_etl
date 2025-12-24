@@ -1,5 +1,6 @@
 """Test fixtures and configuration for Small ETL."""
 
+import logging
 import os
 from datetime import datetime
 from decimal import Decimal
@@ -7,14 +8,13 @@ from typing import Generator
 
 import polars as pl
 import pytest
+from sqlalchemy import text
 from sqlmodel import Session, create_engine
 
-from small_etl.data_access.db_setup import create_database_if_not_exists
 from small_etl.domain.enums import AccountType, Direction, OffsetFlag
 from small_etl.domain.models import Asset, Trade
 from tests.container_manager import (
     MINIO_CONTAINER,
-    MINIO_PORT,
     POSTGRES_CONTAINER,
     POSTGRES_DB,
     POSTGRES_PASSWORD,
@@ -40,6 +40,42 @@ TEST_DATABASE_URL = (
     f"postgresql://{TEST_DB_USER}:{TEST_DB_PASSWORD}"
     f"@{TEST_DB_HOST}:{TEST_DB_PORT}/{TEST_DB_NAME}"
 )
+
+logger = logging.getLogger(__name__)
+
+
+def create_database_if_not_exists(
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str,
+) -> bool:
+    """Create a PostgreSQL database if it doesn't exist.
+
+    Connects to the 'postgres' database to check and create the target database.
+
+    Returns:
+        True if database was created, False if it already exists.
+    """
+    admin_url = f"postgresql://{user}:{password}@{host}:{port}/postgres"
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :dbname"),
+                {"dbname": database},
+            )
+            if result.fetchone():
+                logger.info(f"Database '{database}' already exists")
+                return False
+
+            conn.execute(text(f'CREATE DATABASE "{database}" OWNER "{user}"'))
+            logger.info(f"Database '{database}' created successfully")
+            return True
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture(scope="session")
