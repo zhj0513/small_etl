@@ -44,8 +44,8 @@ class DuckDBClient:
     def upsert_to_postgres(self, df: pl.DataFrame, table_name: str, conflict_column: str) -> int:
         """Upsert DataFrame to PostgreSQL table using DuckDB postgres extension.
 
-        Uses DELETE + INSERT pattern for efficient bulk upsert, as DuckDB's postgres
-        extension has issues with INSERT...ON CONFLICT when the table has auto-increment columns.
+        Uses UPDATE + INSERT pattern to handle foreign key constraints properly.
+        First updates existing rows, then inserts new rows.
 
         Args:
             df: Polars DataFrame to upsert.
@@ -65,22 +65,31 @@ class DuckDBClient:
         temp_table = f"_temp_{table_name}"
         self._conn.register(temp_table, df.to_arrow())
 
-        # Build column list for INSERT
+        # Build column list
         columns = df.columns
+        update_columns = [c for c in columns if c != conflict_column]
+
+        # Update existing rows
+        if update_columns:
+            set_clause = ", ".join([f"{c} = t.\"{c}\"" for c in update_columns])
+            update_sql = f"""
+                UPDATE pg.{table_name} AS p
+                SET {set_clause}
+                FROM {temp_table} AS t
+                WHERE p.{conflict_column} = t."{conflict_column}"
+            """
+            self._conn.execute(update_sql)
+
+        # Insert new rows (those not already in the table)
         columns_str = ", ".join(columns)
         values_str = ", ".join([f'"{c}"' for c in columns])
-
-        # Delete existing rows that match the conflict column
-        delete_sql = f"""
-            DELETE FROM pg.{table_name}
-            WHERE {conflict_column} IN (SELECT "{conflict_column}" FROM {temp_table})
-        """
-        self._conn.execute(delete_sql)
-
-        # Insert all rows
         insert_sql = f"""
             INSERT INTO pg.{table_name} ({columns_str})
-            SELECT {values_str} FROM {temp_table}
+            SELECT {values_str} FROM {temp_table} t
+            WHERE NOT EXISTS (
+                SELECT 1 FROM pg.{table_name} p
+                WHERE p.{conflict_column} = t."{conflict_column}"
+            )
         """
         self._conn.execute(insert_sql)
 

@@ -2,37 +2,40 @@
 
 Tests the complete flow: S3 CSV -> Extract -> Validate -> Load -> PostgreSQL
 
-Prerequisites:
-- PostgreSQL running at localhost:15432
-- MinIO running at localhost:19000
-- Test CSV files uploaded to MinIO bucket
+Note: PostgreSQL and MinIO containers are automatically managed by pytest fixtures.
+      See tests/conftest.py for container management details.
 """
-
-import os
 
 import pytest
 from omegaconf import OmegaConf
 
 from small_etl.application.pipeline import ETLPipeline
 from small_etl.data_access.postgres_repository import PostgresRepository
-
-# Test configuration
-TEST_DB_HOST = os.getenv("DB_HOST", "localhost")
-TEST_DB_PORT = int(os.getenv("DB_PORT", "15432"))
-TEST_DB_USER = os.getenv("DB_USER", "etl")
-TEST_DB_PASSWORD = os.getenv("DB_PASSWORD", "etlpass")
-TEST_DB_NAME = os.getenv("DB_NAME", "etl_test_db")
-
-TEST_DATABASE_URL = (
-    f"postgresql://{TEST_DB_USER}:{TEST_DB_PASSWORD}"
-    f"@{TEST_DB_HOST}:{TEST_DB_PORT}/{TEST_DB_NAME}"
+from tests.container_manager import (
+    MINIO_ACCESS_KEY,
+    MINIO_PORT,
+    MINIO_SECRET_KEY,
+    POSTGRES_DB,
+    POSTGRES_PASSWORD,
+    POSTGRES_PORT,
+    POSTGRES_USER,
 )
 
-# S3/MinIO configuration
-TEST_S3_ENDPOINT = os.getenv("S3_ENDPOINT", "localhost:19000")
-TEST_S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "minioadmin")
-TEST_S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "minioadmin123")
-TEST_S3_BUCKET = os.getenv("S3_BUCKET", "fake-data-for-training")
+# Mark all tests in this module as integration tests that require external services
+pytestmark = pytest.mark.usefixtures("integration_services")
+
+# Test configuration (uses test container ports from container_manager)
+TEST_DB_HOST = "localhost"
+TEST_DATABASE_URL = (
+    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
+    f"@{TEST_DB_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+)
+
+# S3/MinIO configuration (uses test container ports from container_manager)
+TEST_S3_ENDPOINT = f"localhost:{MINIO_PORT}"
+TEST_S3_ACCESS_KEY = MINIO_ACCESS_KEY
+TEST_S3_SECRET_KEY = MINIO_SECRET_KEY
+TEST_S3_BUCKET = "fake-data-for-training"
 
 
 @pytest.fixture(scope="module")

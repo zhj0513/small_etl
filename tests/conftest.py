@@ -12,13 +12,29 @@ from sqlmodel import Session, create_engine
 from small_etl.data_access.db_setup import create_database_if_not_exists
 from small_etl.domain.enums import AccountType, Direction, OffsetFlag
 from small_etl.domain.models import Asset, Trade
+from tests.container_manager import (
+    MINIO_CONTAINER,
+    MINIO_PORT,
+    POSTGRES_CONTAINER,
+    POSTGRES_DB,
+    POSTGRES_PASSWORD,
+    POSTGRES_PORT,
+    POSTGRES_USER,
+    copy_test_data_from_dev,
+    setup_minio_bucket,
+    start_minio_container,
+    start_postgres_container,
+    stop_container,
+    wait_for_minio,
+    wait_for_postgres,
+)
 
-# Test database configuration
+# Test database configuration (uses test container ports)
 TEST_DB_HOST = os.getenv("DB_HOST", "localhost")
-TEST_DB_PORT = int(os.getenv("DB_PORT", "15432"))
-TEST_DB_USER = os.getenv("DB_USER", "etl")
-TEST_DB_PASSWORD = os.getenv("DB_PASSWORD", "etlpass")
-TEST_DB_NAME = os.getenv("DB_NAME", "etl_test_db")
+TEST_DB_PORT = POSTGRES_PORT  # Use port from container_manager
+TEST_DB_USER = POSTGRES_USER
+TEST_DB_PASSWORD = POSTGRES_PASSWORD
+TEST_DB_NAME = POSTGRES_DB
 
 TEST_DATABASE_URL = (
     f"postgresql://{TEST_DB_USER}:{TEST_DB_PASSWORD}"
@@ -229,3 +245,48 @@ def sample_trades() -> list[Trade]:
             updated_at=datetime(2025, 12, 22, 14, 30, 0),
         ),
     ]
+
+
+# ============================================================================
+# Container Management Fixtures (for integration tests)
+# ============================================================================
+
+
+@pytest.fixture(scope="session")
+def postgres_container():
+    """Start PostgreSQL container and stop it after tests.
+
+    This fixture manages the lifecycle of a PostgreSQL container for integration tests.
+    The container is started before tests and stopped after all tests complete.
+    """
+    start_postgres_container()
+    if not wait_for_postgres():
+        pytest.fail("PostgreSQL container failed to start")
+    yield
+    stop_container(POSTGRES_CONTAINER)
+
+
+@pytest.fixture(scope="session")
+def minio_container():
+    """Start MinIO container and stop it after tests.
+
+    This fixture manages the lifecycle of a MinIO container for integration tests.
+    The container is started before tests and stopped after all tests complete.
+    A default bucket is also created and test data is copied from dev MinIO.
+    """
+    start_minio_container()
+    if not wait_for_minio():
+        pytest.fail("MinIO container failed to start")
+    setup_minio_bucket("fake-data-for-training")
+    copy_test_data_from_dev("fake-data-for-training")
+    yield
+    stop_container(MINIO_CONTAINER)
+
+
+@pytest.fixture(scope="session")
+def integration_services(postgres_container, minio_container):
+    """Composite fixture ensuring all integration services are ready.
+
+    Use this fixture in integration tests that require both PostgreSQL and MinIO.
+    """
+    yield
