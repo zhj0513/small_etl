@@ -1,8 +1,8 @@
 """Unit tests for analytics service."""
 
 from decimal import Decimal
+from unittest.mock import MagicMock
 
-import polars as pl
 import pytest
 
 from small_etl.domain.enums import OffsetFlag
@@ -13,100 +13,130 @@ class TestAnalyticsService:
     """Tests for AnalyticsService."""
 
     @pytest.fixture
-    def analytics(self) -> AnalyticsService:
-        """Create analytics instance."""
-        return AnalyticsService()
+    def mock_duckdb(self) -> MagicMock:
+        """Create mock DuckDB client."""
+        return MagicMock()
 
-    def test_asset_statistics(self, analytics: AnalyticsService, sample_asset_data: pl.DataFrame) -> None:
-        """Test computing asset statistics."""
-        stats = analytics.asset_statistics(sample_asset_data)
+    @pytest.fixture
+    def analytics(self, mock_duckdb: MagicMock) -> AnalyticsService:
+        """Create analytics instance with mock DuckDB."""
+        return AnalyticsService(duckdb_client=mock_duckdb)
+
+    def test_asset_statistics_from_db(self, analytics: AnalyticsService, mock_duckdb: MagicMock) -> None:
+        """Test computing asset statistics from database via DuckDB."""
+        mock_duckdb.query_asset_statistics.return_value = {
+            "total_records": 3,
+            "total_cash": 850000.00,
+            "total_frozen_cash": 50000.00,
+            "total_market_value": 1380000.00,
+            "total_assets": 2280000.00,
+            "avg_cash": 283333.33,
+            "avg_total_asset": 760000.00,
+            "by_account_type": {
+                1: {"count": 2, "sum_cash": 600000.00, "sum_total": 1655000.00, "avg_total": 827500.00},
+                2: {"count": 1, "sum_cash": 250000.00, "sum_total": 625000.00, "avg_total": 625000.00},
+            },
+        }
+
+        stats = analytics.asset_statistics_from_db()
 
         assert stats.total_records == 3
-        assert stats.total_cash == Decimal("850000.00")  # 100000 + 500000 + 250000
-        assert stats.total_assets == Decimal("2280000.00")  # 305000 + 1350000 + 625000
+        assert stats.total_cash == Decimal("850000.0")
+        assert stats.total_assets == Decimal("2280000.0")
         assert stats.avg_cash > 0
         assert stats.avg_total_asset > 0
-        assert len(stats.by_account_type) == 2  # SECURITY and CREDIT
+        assert len(stats.by_account_type) == 2
+        mock_duckdb.query_asset_statistics.assert_called_once()
 
-    def test_asset_statistics_empty(self, analytics: AnalyticsService) -> None:
-        """Test computing statistics for empty DataFrame."""
-        empty_df = pl.DataFrame(
-            {
-                "id": [],
-                "account_id": [],
-                "account_type": [],
-                "cash": [],
-                "frozen_cash": [],
-                "market_value": [],
-                "total_asset": [],
-                "updated_at": [],
-            }
-        ).cast(
-            {
-                "id": pl.Int64,
-                "cash": pl.Float64,
-                "frozen_cash": pl.Float64,
-                "market_value": pl.Float64,
-                "total_asset": pl.Float64,
-            }
-        )
+    def test_asset_statistics_from_db_empty(self, analytics: AnalyticsService, mock_duckdb: MagicMock) -> None:
+        """Test computing statistics for empty database."""
+        mock_duckdb.query_asset_statistics.return_value = {
+            "total_records": 0,
+            "total_cash": 0,
+            "total_frozen_cash": 0,
+            "total_market_value": 0,
+            "total_assets": 0,
+            "avg_cash": 0,
+            "avg_total_asset": 0,
+            "by_account_type": {},
+        }
 
-        stats = analytics.asset_statistics(empty_df)
+        stats = analytics.asset_statistics_from_db()
 
         assert stats.total_records == 0
         assert stats.total_cash == Decimal("0")
         assert stats.total_assets == Decimal("0")
 
-    def test_trade_statistics(self, analytics: AnalyticsService, sample_trade_data: pl.DataFrame) -> None:
-        """Test computing trade statistics."""
-        stats = analytics.trade_statistics(sample_trade_data)
+    def test_trade_statistics_from_db(self, analytics: AnalyticsService, mock_duckdb: MagicMock) -> None:
+        """Test computing trade statistics from database via DuckDB."""
+        mock_duckdb.query_trade_statistics.return_value = {
+            "total_records": 3,
+            "total_volume": 3500,
+            "total_amount": 115250.00,
+            "avg_price": 32.50,
+            "avg_volume": 1166.67,
+            "by_account_type": {
+                1: {"count": 2, "sum_volume": 1500, "sum_amount": 29650.00},
+                2: {"count": 1, "sum_volume": 2000, "sum_amount": 85600.00},
+            },
+            "by_offset_flag": {
+                OffsetFlag.OPEN: {"count": 2, "sum_volume": 3000, "sum_amount": 101100.00},
+                OffsetFlag.CLOSE: {"count": 1, "sum_volume": 500, "sum_amount": 14150.00},
+            },
+            "by_strategy": {
+                "策略A": {"count": 1, "sum_volume": 1000, "sum_amount": 15500.00},
+                "量化1号": {"count": 1, "sum_volume": 500, "sum_amount": 14150.00},
+                "趋势跟踪": {"count": 1, "sum_volume": 2000, "sum_amount": 85600.00},
+            },
+        }
+
+        stats = analytics.trade_statistics_from_db()
 
         assert stats.total_records == 3
-        assert stats.total_volume == 1000 + 500 + 2000
-        assert stats.total_amount == Decimal("115250.00")  # 15500 + 14150 + 85600
+        assert stats.total_volume == 3500
+        assert stats.total_amount == Decimal("115250.0")
         assert stats.avg_price > 0
         assert stats.avg_volume > 0
-        assert len(stats.by_strategy) == 3  # 策略A, 量化1号, 趋势跟踪
+        assert len(stats.by_strategy) == 3
+        mock_duckdb.query_trade_statistics.assert_called_once()
 
-    def test_trade_statistics_by_offset_flag(self, analytics: AnalyticsService, sample_trade_data: pl.DataFrame) -> None:
+    def test_trade_statistics_by_offset_flag(self, analytics: AnalyticsService, mock_duckdb: MagicMock) -> None:
         """Test trade statistics breakdown by offset flag."""
-        stats = analytics.trade_statistics(sample_trade_data)
+        mock_duckdb.query_trade_statistics.return_value = {
+            "total_records": 3,
+            "total_volume": 3500,
+            "total_amount": 115250.00,
+            "avg_price": 32.50,
+            "avg_volume": 1166.67,
+            "by_account_type": {},
+            "by_offset_flag": {
+                OffsetFlag.OPEN: {"count": 2, "sum_volume": 3000, "sum_amount": 101100.00},
+                OffsetFlag.CLOSE: {"count": 1, "sum_volume": 500, "sum_amount": 14150.00},
+            },
+            "by_strategy": {},
+        }
+
+        stats = analytics.trade_statistics_from_db()
 
         assert OffsetFlag.OPEN in stats.by_offset_flag
         assert OffsetFlag.CLOSE in stats.by_offset_flag
         assert stats.by_offset_flag[OffsetFlag.OPEN]["count"] == 2
         assert stats.by_offset_flag[OffsetFlag.CLOSE]["count"] == 1
 
-    def test_trade_statistics_empty(self, analytics: AnalyticsService) -> None:
-        """Test computing statistics for empty trade DataFrame."""
-        empty_df = pl.DataFrame(
-            {
-                "id": [],
-                "account_id": [],
-                "account_type": [],
-                "traded_id": [],
-                "stock_code": [],
-                "traded_time": [],
-                "traded_price": [],
-                "traded_volume": [],
-                "traded_amount": [],
-                "strategy_name": [],
-                "order_remark": [],
-                "direction": [],
-                "offset_flag": [],
-                "created_at": [],
-                "updated_at": [],
-            }
-        ).cast(
-            {
-                "id": pl.Int64,
-                "traded_price": pl.Float64,
-                "traded_volume": pl.Int64,
-                "traded_amount": pl.Float64,
-            }
-        )
+    def test_trade_statistics_from_db_empty(self, analytics: AnalyticsService, mock_duckdb: MagicMock) -> None:
+        """Test computing statistics for empty trade database."""
+        mock_duckdb.query_trade_statistics.return_value = {
+            "total_records": 0,
+            "total_volume": 0,
+            "total_amount": 0,
+            "avg_price": 0,
+            "avg_volume": 0,
+            "by_account_type": {},
+            "by_offset_flag": {},
+            "by_strategy": {},
+        }
 
-        stats = analytics.trade_statistics(empty_df)
+        stats = analytics.trade_statistics_from_db()
 
         assert stats.total_records == 0
         assert stats.total_volume == 0

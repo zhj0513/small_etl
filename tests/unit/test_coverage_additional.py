@@ -1,4 +1,4 @@
-"""Additional tests for analytics, and validator to improve coverage."""
+"""Additional tests for validator to improve coverage."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -7,68 +7,7 @@ from unittest.mock import MagicMock
 import polars as pl
 import pytest
 
-from small_etl.services.analytics import AnalyticsService
 from small_etl.services.validator import ValidatorService
-
-
-class TestAnalyticsServiceDb:
-    """Tests for AnalyticsService database methods."""
-
-    def test_asset_statistics_from_db_no_client(self):
-        """Test asset_statistics_from_db raises when no client configured."""
-        service = AnalyticsService(repository=None, duckdb_client=None)
-
-        with pytest.raises(ValueError, match="Neither DuckDB client nor repository"):
-            service.asset_statistics_from_db()
-
-    def test_trade_statistics_from_db_no_client(self):
-        """Test trade_statistics_from_db raises when no client configured."""
-        service = AnalyticsService(repository=None, duckdb_client=None)
-
-        with pytest.raises(ValueError, match="Neither DuckDB client nor repository"):
-            service.trade_statistics_from_db()
-
-    def test_asset_statistics_from_db_with_repo(self):
-        """Test asset_statistics_from_db with repository fallback."""
-        mock_repo = MagicMock()
-        mock_repo.get_all_assets.return_value = pl.DataFrame(
-            {
-                "account_id": ["001"],
-                "account_type": [1],
-                "cash": [100000.00],
-                "frozen_cash": [5000.00],
-                "market_value": [200000.00],
-                "total_asset": [305000.00],
-            }
-        )
-
-        service = AnalyticsService(repository=mock_repo, duckdb_client=None)
-        result = service.asset_statistics_from_db()
-
-        assert result.total_records == 1
-        assert result.total_cash == Decimal("100000.0")
-
-    def test_trade_statistics_from_db_with_repo(self):
-        """Test trade_statistics_from_db with repository fallback."""
-        mock_repo = MagicMock()
-        mock_repo.get_all_trades.return_value = pl.DataFrame(
-            {
-                "account_id": ["001"],
-                "account_type": [1],
-                "traded_id": ["T001"],
-                "traded_price": [15.50],
-                "traded_volume": [1000],
-                "traded_amount": [15500.00],
-                "strategy_name": ["策略A"],
-                "offset_flag": [48],
-            }
-        )
-
-        service = AnalyticsService(repository=mock_repo, duckdb_client=None)
-        result = service.trade_statistics_from_db()
-
-        assert result.total_records == 1
-        assert result.total_volume == 1000
 
 
 class TestValidatorServiceEdgeCases:

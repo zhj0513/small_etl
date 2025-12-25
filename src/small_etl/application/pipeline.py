@@ -9,7 +9,6 @@ from omegaconf import DictConfig
 
 from small_etl.data_access.duckdb_client import DuckDBClient
 from small_etl.data_access.postgres_repository import PostgresRepository
-from small_etl.data_access.s3_connector import S3Connector
 from small_etl.services.analytics import AnalyticsService, AssetStatistics, TradeStatistics
 from small_etl.services.extractor import ExtractorService
 from small_etl.services.loader import LoaderService, LoadResult
@@ -108,20 +107,13 @@ class ETLPipeline:
     def __init__(self, config: DictConfig) -> None:
         self._config = config
 
-        self._s3 = S3Connector(
-            endpoint=config.s3.endpoint,
-            access_key=config.s3.access_key,
-            secret_key=config.s3.secret_key,
-            secure=config.s3.secure,
-        )
-
-        self._duckdb = DuckDBClient()
+        self._duckdb = DuckDBClient(s3_config=config.s3)
 
         echo = getattr(config.db, "echo", False)
         self._repo = PostgresRepository(config.db.url, echo=echo)
 
         self._extractor = ExtractorService(
-            self._s3, self._duckdb, config=getattr(config, "extractor", None)
+            self._duckdb, config=getattr(config, "extractor", None)
         )
         self._validator = ValidatorService(tolerance=config.etl.validation.tolerance)
         self._loader = LoaderService(
@@ -129,7 +121,7 @@ class ETLPipeline:
             duckdb_client=self._duckdb,
             database_url=config.db.url,
         )
-        self._analytics = AnalyticsService(repository=self._repo, duckdb_client=self._duckdb)
+        self._analytics = AnalyticsService(duckdb_client=self._duckdb)
 
         # Attach PostgreSQL to DuckDB for analytics
         self._duckdb.attach_postgres(config.db.url)
@@ -147,9 +139,10 @@ class ETLPipeline:
 
         try:
             logger.info("=== Phase 1: Extract Assets ===")
-            assets_df = self._extractor.extract_assets(
+            assets_df = self._extractor.extract(
                 bucket=self._config.s3.bucket,
                 object_name=self._config.s3.assets_file,
+                data_type="asset",
             )
 
             logger.info("=== Phase 2: Validate Assets ===")
@@ -171,9 +164,10 @@ class ETLPipeline:
             logger.info(f"Loaded {len(valid_account_ids)} accounts for trade validation")
 
             logger.info("=== Phase 4: Extract Trades ===")
-            trades_df = self._extractor.extract_trades(
+            trades_df = self._extractor.extract(
                 bucket=self._config.s3.bucket,
                 object_name=self._config.s3.trades_file,
+                data_type="trade",
             )
 
             logger.info("=== Phase 5: Validate Trades ===")
@@ -241,9 +235,10 @@ class ETLPipeline:
         logger.info("Starting ETL pipeline (assets only)")
 
         try:
-            assets_df = self._extractor.extract_assets(
+            assets_df = self._extractor.extract(
                 bucket=self._config.s3.bucket,
                 object_name=self._config.s3.assets_file,
+                data_type="asset",
             )
 
             assets_validation = self._validator.validate_assets(assets_df)
@@ -294,9 +289,10 @@ class ETLPipeline:
             if not valid_account_ids:
                 raise RuntimeError("No accounts found. Load assets first.")
 
-            trades_df = self._extractor.extract_trades(
+            trades_df = self._extractor.extract(
                 bucket=self._config.s3.bucket,
                 object_name=self._config.s3.trades_file,
+                data_type="trade",
             )
 
             trades_validation = self._validator.validate_trades(trades_df, valid_account_ids)

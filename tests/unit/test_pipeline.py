@@ -163,7 +163,6 @@ def mock_trade_stats() -> TradeStatistics:
 class TestETLPipeline:
     """Tests for ETLPipeline."""
 
-    @patch("small_etl.application.pipeline.S3Connector")
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
     @patch("small_etl.application.pipeline.ExtractorService")
@@ -178,7 +177,6 @@ class TestETLPipeline:
         mock_extractor_cls: MagicMock,
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
-        mock_s3_cls: MagicMock,
         mock_config: MagicMock,
         mock_asset_df: pl.DataFrame,
         mock_trade_df: pl.DataFrame,
@@ -190,8 +188,7 @@ class TestETLPipeline:
         """Test successful complete pipeline run."""
         # Configure mocks
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.extract_assets.return_value = mock_asset_df
-        mock_extractor.extract_trades.return_value = mock_trade_df
+        mock_extractor.extract.side_effect = [mock_asset_df, mock_trade_df]
 
         mock_validator = mock_validator_cls.return_value
         mock_validator.validate_assets.return_value = mock_validation_result_valid
@@ -225,14 +222,12 @@ class TestETLPipeline:
         assert result.trades_stats is not None
 
         # Verify method calls
-        mock_extractor.extract_assets.assert_called_once()
-        mock_extractor.extract_trades.assert_called_once()
+        assert mock_extractor.extract.call_count == 2
         mock_validator.validate_assets.assert_called_once()
         mock_validator.validate_trades.assert_called_once()
         mock_loader.load_assets.assert_called_once()
         mock_loader.load_trades.assert_called_once()
 
-    @patch("small_etl.application.pipeline.S3Connector")
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
     @patch("small_etl.application.pipeline.ExtractorService")
@@ -247,7 +242,6 @@ class TestETLPipeline:
         mock_extractor_cls: MagicMock,
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
-        mock_s3_cls: MagicMock,
         mock_config: MagicMock,
         mock_asset_df: pl.DataFrame,
         mock_trade_df: pl.DataFrame,
@@ -259,8 +253,7 @@ class TestETLPipeline:
     ) -> None:
         """Test pipeline continues with invalid asset data (logs warning)."""
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.extract_assets.return_value = mock_asset_df
-        mock_extractor.extract_trades.return_value = mock_trade_df
+        mock_extractor.extract.side_effect = [mock_asset_df, mock_trade_df]
 
         mock_validator = mock_validator_cls.return_value
         mock_validator.validate_assets.return_value = mock_validation_result_invalid
@@ -286,7 +279,6 @@ class TestETLPipeline:
         assert result.assets_validation.is_valid is False
         assert result.assets_validation.invalid_count == 1
 
-    @patch("small_etl.application.pipeline.S3Connector")
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
     @patch("small_etl.application.pipeline.ExtractorService")
@@ -301,7 +293,6 @@ class TestETLPipeline:
         mock_extractor_cls: MagicMock,
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
-        mock_s3_cls: MagicMock,
         mock_config: MagicMock,
         mock_asset_df: pl.DataFrame,
         mock_validation_result_valid: ValidationResult,
@@ -309,7 +300,7 @@ class TestETLPipeline:
     ) -> None:
         """Test pipeline fails when asset loading fails."""
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.extract_assets.return_value = mock_asset_df
+        mock_extractor.extract.return_value = mock_asset_df
 
         mock_validator = mock_validator_cls.return_value
         mock_validator.validate_assets.return_value = mock_validation_result_valid
@@ -324,10 +315,9 @@ class TestETLPipeline:
         assert result.error_message is not None
         assert "Asset loading failed" in result.error_message
 
-        # Trades should not be processed
-        mock_extractor.extract_trades.assert_not_called()
+        # Extract should be called only once (for assets)
+        assert mock_extractor.extract.call_count == 1
 
-    @patch("small_etl.application.pipeline.S3Connector")
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
     @patch("small_etl.application.pipeline.ExtractorService")
@@ -342,7 +332,6 @@ class TestETLPipeline:
         mock_extractor_cls: MagicMock,
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
-        mock_s3_cls: MagicMock,
         mock_config: MagicMock,
         mock_asset_df: pl.DataFrame,
         mock_trade_df: pl.DataFrame,
@@ -352,8 +341,7 @@ class TestETLPipeline:
     ) -> None:
         """Test pipeline fails when trade loading fails."""
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.extract_assets.return_value = mock_asset_df
-        mock_extractor.extract_trades.return_value = mock_trade_df
+        mock_extractor.extract.side_effect = [mock_asset_df, mock_trade_df]
 
         mock_validator = mock_validator_cls.return_value
         mock_validator.validate_assets.return_value = mock_validation_result_valid
@@ -373,7 +361,6 @@ class TestETLPipeline:
         assert result.error_message is not None
         assert "Trade loading failed" in result.error_message
 
-    @patch("small_etl.application.pipeline.S3Connector")
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
     @patch("small_etl.application.pipeline.ExtractorService")
@@ -388,12 +375,11 @@ class TestETLPipeline:
         mock_extractor_cls: MagicMock,
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
-        mock_s3_cls: MagicMock,
         mock_config: MagicMock,
     ) -> None:
         """Test pipeline fails when extraction fails."""
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.extract_assets.side_effect = Exception("S3 connection failed")
+        mock_extractor.extract.side_effect = Exception("S3 connection failed")
 
         pipeline = ETLPipeline(mock_config)
         result = pipeline.run()
@@ -402,7 +388,6 @@ class TestETLPipeline:
         assert result.error_message is not None
         assert "S3 connection failed" in result.error_message
 
-    @patch("small_etl.application.pipeline.S3Connector")
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
     @patch("small_etl.application.pipeline.ExtractorService")
@@ -417,7 +402,6 @@ class TestETLPipeline:
         mock_extractor_cls: MagicMock,
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
-        mock_s3_cls: MagicMock,
         mock_config: MagicMock,
         mock_asset_df: pl.DataFrame,
         mock_validation_result_valid: ValidationResult,
@@ -426,7 +410,7 @@ class TestETLPipeline:
     ) -> None:
         """Test assets-only pipeline run."""
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.extract_assets.return_value = mock_asset_df
+        mock_extractor.extract.return_value = mock_asset_df
 
         mock_validator = mock_validator_cls.return_value
         mock_validator.validate_assets.return_value = mock_validation_result_valid
@@ -448,10 +432,9 @@ class TestETLPipeline:
         assert result.trades_load is None
         assert result.trades_stats is None
 
-        # Trades should not be processed
-        mock_extractor.extract_trades.assert_not_called()
+        # Extract should be called only once (for assets)
+        assert mock_extractor.extract.call_count == 1
 
-    @patch("small_etl.application.pipeline.S3Connector")
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
     @patch("small_etl.application.pipeline.ExtractorService")
@@ -466,7 +449,6 @@ class TestETLPipeline:
         mock_extractor_cls: MagicMock,
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
-        mock_s3_cls: MagicMock,
         mock_config: MagicMock,
         mock_trade_df: pl.DataFrame,
         mock_validation_result_valid: ValidationResult,
@@ -478,7 +460,7 @@ class TestETLPipeline:
         mock_repo.get_all_account_ids.return_value = {"10000000001", "10000000002"}
 
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.extract_trades.return_value = mock_trade_df
+        mock_extractor.extract.return_value = mock_trade_df
 
         mock_validator = mock_validator_cls.return_value
         mock_validator.validate_trades.return_value = mock_validation_result_valid
@@ -500,10 +482,9 @@ class TestETLPipeline:
         assert result.assets_load is None
         assert result.assets_stats is None
 
-        # Assets should not be processed
-        mock_extractor.extract_assets.assert_not_called()
+        # Extract should be called only once (for trades)
+        assert mock_extractor.extract.call_count == 1
 
-    @patch("small_etl.application.pipeline.S3Connector")
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
     @patch("small_etl.application.pipeline.ExtractorService")
@@ -518,7 +499,6 @@ class TestETLPipeline:
         mock_extractor_cls: MagicMock,
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
-        mock_s3_cls: MagicMock,
         mock_config: MagicMock,
     ) -> None:
         """Test trades-only pipeline fails when no accounts exist."""
@@ -532,7 +512,6 @@ class TestETLPipeline:
         assert result.error_message is not None
         assert "No accounts found" in result.error_message
 
-    @patch("small_etl.application.pipeline.S3Connector")
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
     @patch("small_etl.application.pipeline.ExtractorService")
@@ -547,7 +526,6 @@ class TestETLPipeline:
         mock_extractor_cls: MagicMock,
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
-        mock_s3_cls: MagicMock,
         mock_config: MagicMock,
     ) -> None:
         """Test pipeline works as context manager."""
@@ -561,7 +539,6 @@ class TestETLPipeline:
         mock_duckdb.close.assert_called_once()
         mock_repo.close.assert_called_once()
 
-    @patch("small_etl.application.pipeline.S3Connector")
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
     @patch("small_etl.application.pipeline.ExtractorService")
@@ -576,7 +553,6 @@ class TestETLPipeline:
         mock_extractor_cls: MagicMock,
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
-        mock_s3_cls: MagicMock,
         mock_config: MagicMock,
     ) -> None:
         """Test close method cleans up resources."""

@@ -14,19 +14,14 @@ class TestExtractorService:
     """Tests for ExtractorService."""
 
     @pytest.fixture
-    def mock_s3_connector(self):
-        """Create a mock S3 connector."""
-        return MagicMock()
-
-    @pytest.fixture
     def mock_duckdb_client(self):
         """Create a mock DuckDB client."""
         return MagicMock()
 
     @pytest.fixture
-    def extractor_no_config(self, mock_s3_connector, mock_duckdb_client):
+    def extractor_no_config(self, mock_duckdb_client):
         """Create ExtractorService without config."""
-        return ExtractorService(mock_s3_connector, mock_duckdb_client, config=None)
+        return ExtractorService(mock_duckdb_client, config=None)
 
     @pytest.fixture
     def assets_config(self):
@@ -95,30 +90,14 @@ class TestExtractorService:
             }
         )
 
-    def test_init(self, mock_s3_connector, mock_duckdb_client):
+    def test_init(self, mock_duckdb_client):
         """Test ExtractorService initialization."""
-        extractor = ExtractorService(mock_s3_connector, mock_duckdb_client)
-        assert extractor._s3 == mock_s3_connector
+        extractor = ExtractorService(mock_duckdb_client)
         assert extractor._duckdb == mock_duckdb_client
         assert extractor._config is None
 
-    def test_get_polars_dtype_known_types(self, extractor_no_config):
-        """Test _get_polars_dtype with known types."""
-        assert extractor_no_config._get_polars_dtype("Int32") == pl.Int32()
-        assert extractor_no_config._get_polars_dtype("Int64") == pl.Int64()
-        assert extractor_no_config._get_polars_dtype("Utf8") == pl.Utf8()
-        assert extractor_no_config._get_polars_dtype("Float64") == pl.Float64()
-        assert extractor_no_config._get_polars_dtype("Datetime") == pl.Datetime()
-
-    def test_get_polars_dtype_unknown_type(self, extractor_no_config):
-        """Test _get_polars_dtype with unknown type defaults to Utf8."""
-        assert extractor_no_config._get_polars_dtype("UnknownType") == pl.Utf8()
-
-    def test_extract_assets_with_duckdb_fallback(self, mock_s3_connector, mock_duckdb_client):
-        """Test extract_assets using DuckDB fallback (no config)."""
-        csv_content = b"id,account_id,account_type,cash,frozen_cash,market_value,total_asset,updated_at\n1,10000000001,1,100000.00,5000.00,200000.00,305000.00,2025-12-22 14:30:00"
-        mock_s3_connector.download_csv.return_value = csv_content
-
+    def test_extract_asset_no_config(self, mock_duckdb_client):
+        """Test extract asset using DuckDB without config transformation."""
         expected_df = pl.DataFrame(
             {
                 "id": [1],
@@ -133,33 +112,40 @@ class TestExtractorService:
         )
         mock_duckdb_client.query.return_value = expected_df
 
-        extractor = ExtractorService(mock_s3_connector, mock_duckdb_client, config=None)
-        result = extractor.extract_assets("test-bucket", "assets.csv")
+        extractor = ExtractorService(mock_duckdb_client, config=None)
+        result = extractor.extract("test-bucket", "assets.csv", "asset")
 
-        mock_s3_connector.download_csv.assert_called_once_with("test-bucket", "assets.csv")
-        mock_duckdb_client.load_csv_bytes.assert_called_once()
+        mock_duckdb_client.load_csv_from_s3.assert_called_once_with("test-bucket", "assets.csv", "raw_assets")
         mock_duckdb_client.query.assert_called_once()
         assert len(result) == 1
 
-    def test_extract_assets_with_config(self, mock_s3_connector, mock_duckdb_client, assets_config):
-        """Test extract_assets using config-driven transformation."""
-        csv_content = b"id,account_id,account_type,cash,frozen_cash,market_value,total_asset,updated_at\n1,10000000001,1,100000.00,5000.00,200000.00,305000.00,2025-12-22 14:30:00"
-        mock_s3_connector.download_csv.return_value = csv_content
+    def test_extract_asset_with_config(self, mock_duckdb_client, assets_config):
+        """Test extract asset using DuckDB with config transformation."""
+        # DuckDB returns raw DataFrame (string columns from CSV)
+        raw_df = pl.DataFrame(
+            {
+                "id": ["1"],
+                "account_id": ["10000000001"],
+                "account_type": ["1"],
+                "cash": ["100000.00"],
+                "frozen_cash": ["5000.00"],
+                "market_value": ["200000.00"],
+                "total_asset": ["305000.00"],
+                "updated_at": ["2025-12-22 14:30:00"],
+            }
+        )
+        mock_duckdb_client.query.return_value = raw_df
 
-        extractor = ExtractorService(mock_s3_connector, mock_duckdb_client, config=assets_config)
-        result = extractor.extract_assets("test-bucket", "assets.csv")
+        extractor = ExtractorService(mock_duckdb_client, config=assets_config)
+        result = extractor.extract("test-bucket", "assets.csv", "asset")
 
-        mock_s3_connector.download_csv.assert_called_once_with("test-bucket", "assets.csv")
-        # DuckDB should NOT be called when config is used
-        mock_duckdb_client.load_csv_bytes.assert_not_called()
+        mock_duckdb_client.load_csv_from_s3.assert_called_once_with("test-bucket", "assets.csv", "raw_assets")
+        mock_duckdb_client.query.assert_called_once()
         assert len(result) == 1
         assert "account_id" in result.columns
 
-    def test_extract_trades_with_duckdb_fallback(self, mock_s3_connector, mock_duckdb_client):
-        """Test extract_trades using DuckDB fallback (no config)."""
-        csv_content = "id,account_id,account_type,traded_id,stock_code,traded_time,traded_price,traded_volume,traded_amount,strategy_name,order_remark,direction,offset_flag,created_at,updated_at\n1,10000000001,1,T001,600000,2025-12-22 10:30:00,15.50,1000,15500.00,策略A,正常交易,0,48,2025-12-22 10:30:00,2025-12-22 14:30:00".encode("utf-8")
-        mock_s3_connector.download_csv.return_value = csv_content
-
+    def test_extract_trade_no_config(self, mock_duckdb_client):
+        """Test extract trade using DuckDB without config transformation."""
         expected_df = pl.DataFrame(
             {
                 "id": [1],
@@ -181,29 +167,46 @@ class TestExtractorService:
         )
         mock_duckdb_client.query.return_value = expected_df
 
-        extractor = ExtractorService(mock_s3_connector, mock_duckdb_client, config=None)
-        result = extractor.extract_trades("test-bucket", "trades.csv")
+        extractor = ExtractorService(mock_duckdb_client, config=None)
+        result = extractor.extract("test-bucket", "trades.csv", "trade")
 
-        mock_s3_connector.download_csv.assert_called_once_with("test-bucket", "trades.csv")
-        mock_duckdb_client.load_csv_bytes.assert_called_once()
+        mock_duckdb_client.load_csv_from_s3.assert_called_once_with("test-bucket", "trades.csv", "raw_trades")
         mock_duckdb_client.query.assert_called_once()
         assert len(result) == 1
 
-    def test_extract_trades_with_config(self, mock_s3_connector, mock_duckdb_client, trades_config):
-        """Test extract_trades using config-driven transformation."""
-        csv_content = "id,account_id,account_type,traded_id,stock_code,traded_time,traded_price,traded_volume,traded_amount,strategy_name,order_remark,direction,offset_flag,created_at,updated_at\n1,10000000001,1,T001,600000,2025-12-22 10:30:00,15.50,1000,15500.00,策略A,正常交易,0,48,2025-12-22 10:30:00,2025-12-22 14:30:00".encode("utf-8")
-        mock_s3_connector.download_csv.return_value = csv_content
+    def test_extract_trade_with_config(self, mock_duckdb_client, trades_config):
+        """Test extract trade using DuckDB with config transformation."""
+        # DuckDB returns raw DataFrame
+        raw_df = pl.DataFrame(
+            {
+                "id": ["1"],
+                "account_id": ["10000000001"],
+                "account_type": ["1"],
+                "traded_id": ["T001"],
+                "stock_code": ["600000"],
+                "traded_time": ["2025-12-22 10:30:00"],
+                "traded_price": ["15.50"],
+                "traded_volume": ["1000"],
+                "traded_amount": ["15500.00"],
+                "strategy_name": ["策略A"],
+                "order_remark": ["正常交易"],
+                "direction": ["0"],
+                "offset_flag": ["48"],
+                "created_at": ["2025-12-22 10:30:00"],
+                "updated_at": ["2025-12-22 14:30:00"],
+            }
+        )
+        mock_duckdb_client.query.return_value = raw_df
 
-        extractor = ExtractorService(mock_s3_connector, mock_duckdb_client, config=trades_config)
-        result = extractor.extract_trades("test-bucket", "trades.csv")
+        extractor = ExtractorService(mock_duckdb_client, config=trades_config)
+        result = extractor.extract("test-bucket", "trades.csv", "trade")
 
-        mock_s3_connector.download_csv.assert_called_once_with("test-bucket", "trades.csv")
-        # DuckDB should NOT be called when config is used
-        mock_duckdb_client.load_csv_bytes.assert_not_called()
+        mock_duckdb_client.load_csv_from_s3.assert_called_once_with("test-bucket", "trades.csv", "raw_trades")
+        mock_duckdb_client.query.assert_called_once()
         assert len(result) == 1
         assert "traded_id" in result.columns
 
-    def test_transform_dataframe_with_missing_column(self, mock_s3_connector, mock_duckdb_client):
+    def test_transform_dataframe_with_missing_column(self, mock_duckdb_client):
         """Test _transform_dataframe skips missing columns."""
         config = OmegaConf.create(
             {
@@ -216,7 +219,7 @@ class TestExtractorService:
             }
         )
 
-        extractor = ExtractorService(mock_s3_connector, mock_duckdb_client, config=config)
+        extractor = ExtractorService(mock_duckdb_client, config=config)
 
         df = pl.DataFrame({"account_id": ["10000000001"]})
         result = extractor._transform_dataframe(df, config.assets.columns)
@@ -224,7 +227,7 @@ class TestExtractorService:
         assert "account_id" in result.columns
         assert "nonexistent" not in result.columns
 
-    def test_transform_dataframe_all_dtypes(self, mock_s3_connector, mock_duckdb_client):
+    def test_transform_dataframe_all_dtypes(self, mock_duckdb_client):
         """Test _transform_dataframe with all supported dtypes."""
         config = OmegaConf.create(
             {
@@ -241,7 +244,7 @@ class TestExtractorService:
             }
         )
 
-        extractor = ExtractorService(mock_s3_connector, mock_duckdb_client, config=config)
+        extractor = ExtractorService(mock_duckdb_client, config=config)
 
         df = pl.DataFrame(
             {

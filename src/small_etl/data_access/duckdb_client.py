@@ -1,12 +1,13 @@
 """DuckDB client for in-memory data validation."""
 
 import logging
-import tempfile
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import duckdb
 import polars as pl
+
+if TYPE_CHECKING:
+    from omegaconf import DictConfig
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +19,57 @@ class DuckDBClient:
     and transformation operations.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, s3_config: "DictConfig | None" = None) -> None:
         self._conn = duckdb.connect(":memory:")
         self._pg_attached = False
+        self._s3_configured = False
+
+        if s3_config is not None:
+            self._configure_s3(s3_config)
+
         logger.info("DuckDBClient initialized with in-memory database")
+
+    def _configure_s3(self, s3_config: "DictConfig") -> None:
+        """Configure DuckDB to access S3/MinIO.
+
+        Args:
+            s3_config: S3 configuration from Hydra.
+        """
+        self._conn.execute("INSTALL httpfs")
+        self._conn.execute("LOAD httpfs")
+
+        endpoint = s3_config.endpoint
+        access_key = s3_config.access_key
+        secret_key = s3_config.secret_key
+        secure = getattr(s3_config, "secure", False)
+
+        self._conn.execute(f"SET s3_endpoint='{endpoint}'")
+        self._conn.execute(f"SET s3_access_key_id='{access_key}'")
+        self._conn.execute(f"SET s3_secret_access_key='{secret_key}'")
+        self._conn.execute(f"SET s3_use_ssl={str(secure).lower()}")
+        self._conn.execute("SET s3_url_style='path'")
+
+        self._s3_configured = True
+        logger.info(f"DuckDB S3 configured with endpoint: {endpoint}")
+
+    def load_csv_from_s3(self, bucket: str, object_name: str, table_name: str) -> None:
+        """Load CSV data from S3 directly into a DuckDB table.
+
+        Args:
+            bucket: S3 bucket name.
+            object_name: CSV file object name/path.
+            table_name: Name for the created table.
+
+        Raises:
+            RuntimeError: If S3 is not configured.
+        """
+        if not self._s3_configured:
+            raise RuntimeError("S3 not configured. Pass s3_config to DuckDBClient constructor.")
+
+        s3_path = f"s3://{bucket}/{object_name}"
+        self._conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        self._conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto('{s3_path}', header=true, timestampformat='%Y-%m-%dT%H:%M:%S')")
+        logger.info(f"Loaded CSV from {s3_path} into table '{table_name}'")
 
     def attach_postgres(self, database_url: str) -> None:
         """Attach PostgreSQL database using DuckDB postgres extension.
@@ -99,24 +147,6 @@ class DuckDBClient:
         row_count = len(df)
         logger.info(f"Upserted {row_count} rows to pg.{table_name}")
         return row_count
-
-    def load_csv_bytes(self, csv_bytes: bytes, table_name: str) -> None:
-        """Load CSV data from bytes into a DuckDB table.
-
-        Args:
-            csv_bytes: CSV file content as bytes.
-            table_name: Name for the created table.
-        """
-        with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as f:
-            f.write(csv_bytes)
-            temp_path = f.name
-
-        try:
-            self._conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-            self._conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto('{temp_path}', header=true, timestampformat='%Y-%m-%dT%H:%M:%S')")
-            logger.info(f"Loaded CSV data into table '{table_name}'")
-        finally:
-            Path(temp_path).unlink(missing_ok=True)
 
     def query(self, sql: str) -> pl.DataFrame:
         """Execute SQL query and return results as Polars DataFrame.
