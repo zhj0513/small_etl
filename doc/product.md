@@ -5,7 +5,7 @@
 - 目标数据表：
   - 资产表 (asset表)
   - 交易表 (trade表)
-- 实现数据提取、验证、入库、统计分析全流程
+- 实现数据验证、数据提取（包含提取字段、字段类型转换等入库前必要的数据处理）、入库、统计分析全流程
 - 提供可重复执行、可测试、可扩展的数据管道
 
 ## 目标用户
@@ -17,40 +17,47 @@
 
 ```mermaid
 flowchart LR
-    S3["S3/MinIO<br/>CSV文件"] --> DuckDB["DuckDB httpfs<br/>直接读取S3"]
-    DuckDB --> Extract["提取<br/>ExtractorService"]
-    Extract --> Validate["验证<br/>ValidatorService"]
-    Validate --> |有效数据| Load["加载<br/>LoaderService"]
-    Validate --> |无效数据| Log["错误日志"]
-    Load --> PG["PostgreSQL"]
-    PG --> Analytics["统计分析<br/>AnalyticsService"]
+    S3[S3 / MinIO<br/>CSV 文件]
+    Polars[Polars<br/>读取 CSV]
+    Validate[ValidatorService<br/>数据验证]
+    DuckDB[DuckDB]
+    Extract[ExtractorService<br/>字段提取与类型转换]
+    Load[LoadService<br/>数据入库]
+    PG[PostgreSQL]
+    Analytics[AnalyticsService<br/>统计分析]
+    Log[错误日志<br/>流程终止]
+
+    S3 --> Polars
+    Polars --> Validate
+    Validate -->|CSV 有效| DuckDB
+    Validate -->|CSV 无效| Log
+    DuckDB --> Extract
+    Extract --> Load
+    Load --> PG
+    PG --> Analytics
 ```
 
 **数据处理顺序：** Assets 必须先于 Trades 处理（外键约束：Trade.account_id → Asset.account_id）
 
 ## 核心功能
 
-### 1. 数据提取
-- DuckDB 通过 httpfs 扩展直接从 S3 读取 CSV 文件
-- 支持 Hydra 配置驱动的列映射和类型转换（`configs/extractor/default.yaml`）
-- 智能类型转换：自动检测列类型，避免重复转换
-
-### 2. 数据验证
-- **字段级验证**：Pandera Schema 定义类型、范围、枚举值
+### 1. 数据验证
+- 使用polars读取s3上csv文件，使用Pandera验证来源csv文件是否合法。合法，传到数据提取层。如果不合法，则不再继续后续流程
+- **字段级验证**：所有字段没有空值
 - **业务规则验证**：
   - Asset: `total_asset = cash + frozen_cash + market_value (±0.01)`
   - Trade: `traded_amount = traded_price × traded_volume (±0.01)`
-- **外键验证**：Trade 的 account_id 必须存在于已加载的 Asset 中
-- **结果分离**：有效数据入库，无效数据记录到错误日志
+
+### 2. 数据提取
+- 使用duckdb读取数据验证后的Polars DataFrame数据
+- 支持 Hydra 配置驱动的列映射和类型转换（`configs/extractor/default.yaml`）
 
 ### 3. 数据入库
-- 使用 DuckDB PostgreSQL 插件进行批量 UPSERT
-- UPDATE + INSERT 分离策略，避免外键约束问题
-- 默认批次大小：10,000 行
+- 使用 DuckDB PostgreSQL 插件进行插入
 
 ### 4. 数据分析
 - 用 DuckDB 直接查询 PostgreSQL 中的已入库数据
-- 支持多维度聚合：按账户类型、策略、开平标志分组
+- 聚合统计：账户资产均值、账户资产总量
 
 ### 5. 命令行界面
 - 支持 run/clean/schedule 命令

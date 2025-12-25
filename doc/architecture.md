@@ -9,10 +9,14 @@ Small ETL 是一个批量数据 ETL 系统，用于将 S3 CSV 文件中的资产
 ```mermaid
 flowchart LR
     subgraph SYS["Small ETL System"]
-        S3["S3/MinIO\n(CSV Files)"] --> DuckDB["DuckDB\n(httpfs + Transform)"]
-        DuckDB --> Validator["Validator\n(Pandera Schema)"]
-        Validator --> PG["PostgreSQL\n(Database)"]
-        PG --> Analytics["Analytics\n(Statistics)"]
+        S3["S3/MinIO\n(CSV Files)"] --> Polars["Polars\n(读取 CSV)"]
+        Polars --> Validator["ValidatorService\n(Pandera 验证)"]
+        Validator -->|有效| DuckDB["DuckDB\n(类型转换)"]
+        Validator -->|无效| Log["错误日志"]
+        DuckDB --> Extract["ExtractorService\n(字段提取)"]
+        Extract --> Load["LoadService\n(数据入库)"]
+        Load --> PG["PostgreSQL"]
+        PG --> Analytics["AnalyticsService\n(统计分析)"]
     end
 ```
 
@@ -59,8 +63,8 @@ flowchart TB
     %% Service Layer
     %% ======================
     subgraph SERVICE["Service Layer (服务层)"]
-        EX["ExtractorService<br/>S3→DuckDB→Polars"]
-        VA["ValidatorService<br/>字段+业务规则验证"]
+        VA["ValidatorService<br/>Polars读取+Pandera验证"]
+        EX["ExtractorService<br/>DuckDB字段提取与类型转换"]
         LO["LoaderService<br/>批量加载PostgreSQL"]
         AN["AnalyticsService<br/>统计分析"]
     end
@@ -111,13 +115,13 @@ flowchart TB
 - 上下文管理器支持，自动资源清理
 
 #### Service Layer (服务层)
-- **ExtractorService**: 从 S3 提取 CSV，通过 DuckDB 转换为 Polars DataFrame
-- **ValidatorService**: 字段级验证 + 业务规则验证，返回 ValidationResult
+- **ValidatorService**: 使用 Polars 读取 S3 CSV，通过 Pandera 验证数据合法性，返回 ValidationResult
+- **ExtractorService**: 使用 DuckDB 读取验证后的数据，进行字段提取与类型转换
 - **LoaderService**: 批量将 DataFrame 加载到 PostgreSQL
-- **AnalyticsService**: 对有效数据进行统计分析
+- **AnalyticsService**: 对已入库数据进行统计分析
 
 #### Data Access Layer (数据访问层)
-- **DuckDBClient**: 内存数据库操作，通过 httpfs 扩展直接读取 S3 CSV，支持 PostgreSQL 插件写入
+- **DuckDBClient**: 内存数据库操作，数据类型转换，支持 PostgreSQL 插件写入
 - **PostgresRepository**: 数据库 CRUD 操作，支持批量 UPSERT
 
 #### Domain Layer (领域层)
@@ -362,51 +366,91 @@ jobs:
 ```mermaid
 flowchart LR
     subgraph Pipeline["ETLPipeline"]
-        E["Extract"] --> V["Validate"] --> L["Load"] --> A["Analytics"]
+        V["Validate"] --> E["Extract"] --> L["Load"] --> A["Analytics"]
     end
 
-    E --> S3["S3Connector"]
-    E --> Duck["DuckDBClient"]
+    V --> Polars["Polars\n读取S3 CSV"]
     V --> VS["ValidatorService"]
+    E --> Duck["DuckDBClient"]
     L --> Repo["PostgresRepository"]
     A --> AS["AnalyticsService"]
 ```
 
-#### 3.3.1 ExtractorService (提取器)
+#### 3.3.1 ValidatorService (验证器)
 
 **职责:**
-- 通过 DuckDB httpfs 扩展直接从 S3 读取 CSV
+- 使用 Polars 读取 S3 上的 CSV 文件
+- 字段类型和范围验证
+- 枚举值有效性检查
+- 业务规则验证（金额计算公式）
+- 验证通过后传递给提取层
+
+**接口:**
+```python
+@dataclass
+class ValidationResult:
+    is_valid: bool
+    valid_rows: pl.DataFrame
+    invalid_rows: pl.DataFrame
+    errors: list[ValidationError]
+    total_rows: int
+    valid_count: int
+    invalid_count: int
+
+class ValidatorService:
+    def __init__(self, tolerance: float = 0.01): ...
+    def validate_assets(self, df: pl.DataFrame) -> ValidationResult: ...
+    def validate_trades(self, df: pl.DataFrame, valid_account_ids: set[str] | None = None) -> ValidationResult: ...
+```
+
+**验证规则:**
+- **Asset**:
+  - account_id 必填且唯一
+  - account_type ∈ {1, 2, 3, 5, 6, 7, 11}
+  - cash, frozen_cash, market_value, total_asset >= 0
+  - total_asset = cash + frozen_cash + market_value (±0.01)
+- **Trade**:
+  - 所有字符串字段必填
+  - traded_price, traded_volume, traded_amount > 0
+  - direction ∈ {0, 48, 49}
+  - offset_flag ∈ {48, 49, 50, 51, 52, 53, 54}
+  - traded_amount = traded_price × traded_volume (±0.01)
+
+#### 3.3.2 ExtractorService (提取器)
+
+**职责:**
+- 使用 DuckDB 读取验证后的 Polars DataFrame 数据
 - 根据 Hydra 配置进行列转换和类型映射
-- 返回 Polars DataFrame
+- 返回处理后的 Polars DataFrame
 
 **接口:**
 ```python
 class ExtractorService:
     def __init__(self, duckdb_client: DuckDBClient, config: DictConfig | None = None): ...
-    def extract(self, bucket: str, object_name: str, data_type: str) -> pl.DataFrame: ...
+    def extract(self, df: pl.DataFrame, data_type: str) -> pl.DataFrame: ...
 ```
 
-**DuckDB 直接读取 S3 实现:**
+**DuckDB 数据处理实现:**
 
-ExtractorService 使用 DuckDB 的 httpfs 扩展直接从 S3 读取 CSV，然后根据 Hydra 配置进行类型转换：
+ExtractorService 使用 DuckDB 处理验证后的 Polars DataFrame，进行类型转换：
 
 ```python
-def extract(self, bucket: str, object_name: str, data_type: str) -> pl.DataFrame:
+def extract(self, df: pl.DataFrame, data_type: str) -> pl.DataFrame:
     config = DataTypeRegistry.get(data_type)
-    logger.info(f"Extracting {data_type} from s3://{bucket}/{object_name}")
+    logger.info(f"Extracting {data_type} data")
 
-    # DuckDB 直接从 S3 读取 CSV（使用 httpfs 扩展）
-    self._duckdb.load_csv_from_s3(bucket, object_name, config.raw_table_name)
-    df = self._duckdb.query(f"SELECT * FROM {config.raw_table_name}")
+    # 将验证后的 Polars DataFrame 注册到 DuckDB
+    self._duckdb.register_dataframe(df, config.raw_table_name)
+    result_df = self._duckdb.query(f"SELECT * FROM {config.raw_table_name}")
 
     # 根据 Hydra 配置进行类型转换
     config_attr = f"{data_type}s"  # e.g., "assets", "trades"
     if self._config is not None and hasattr(self._config, config_attr):
         type_config = getattr(self._config, config_attr)
-        df = self._transform_dataframe(df, type_config.columns)
+        result_df = self._transform_dataframe(result_df, type_config.columns)
 
-    logger.info(f"Extracted {len(df)} {data_type} records")
-    return df
+    logger.info(f"Extracted {len(result_df)} {data_type} records")
+    return result_df
 ```
 
 **配置驱动转换 (_transform_dataframe):**
@@ -439,28 +483,6 @@ def _transform_dataframe(self, df: pl.DataFrame, columns_config: list[Any]) -> p
     return df.select(expressions)
 ```
 
-**DuckDB httpfs S3 配置:**
-
-DuckDBClient 在初始化时配置 S3 访问：
-```python
-def _configure_s3(self, s3_config: "DictConfig") -> None:
-    self._conn.execute("INSTALL httpfs")
-    self._conn.execute("LOAD httpfs")
-    self._conn.execute(f"SET s3_endpoint='{endpoint}'")
-    self._conn.execute(f"SET s3_access_key_id='{access_key}'")
-    self._conn.execute(f"SET s3_secret_access_key='{secret_key}'")
-    self._conn.execute(f"SET s3_use_ssl={str(secure).lower()}")
-    self._conn.execute("SET s3_url_style='path'")
-
-def load_csv_from_s3(self, bucket: str, object_name: str, table_name: str) -> None:
-    s3_path = f"s3://{bucket}/{object_name}"
-    self._conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-    self._conn.execute(f"""
-        CREATE TABLE {table_name} AS
-        SELECT * FROM read_csv_auto('{s3_path}', header=true, timestampformat='%Y-%m-%dT%H:%M:%S')
-    """)
-```
-
 **Hydra 列映射配置示例 (`configs/extractor/default.yaml`):**
 
 ```yaml
@@ -486,45 +508,6 @@ csv_options:
   encoding: "utf-8"
   null_values: ["", "NULL", "null", "None"]
 ```
-
-#### 3.3.2 ValidatorService (验证器)
-
-**职责:**
-- 字段类型和范围验证
-- 枚举值有效性检查
-- 业务规则验证（金额计算公式）
-- 可选的外键验证（trades 的 account_id）
-
-**接口:**
-```python
-@dataclass
-class ValidationResult:
-    is_valid: bool
-    valid_rows: pl.DataFrame
-    invalid_rows: pl.DataFrame
-    errors: list[ValidationError]
-    total_rows: int
-    valid_count: int
-    invalid_count: int
-
-class ValidatorService:
-    def __init__(self, tolerance: float = 0.01): ...
-    def validate_assets(self, df: pl.DataFrame) -> ValidationResult: ...
-    def validate_trades(self, df: pl.DataFrame, valid_account_ids: set[str] | None = None) -> ValidationResult: ...
-```
-
-**验证规则:**
-- **Asset**:
-  - account_id 必填且唯一
-  - account_type ∈ {1, 2, 3, 5, 6, 7, 11}
-  - cash, frozen_cash, market_value, total_asset >= 0
-  - total_asset = cash + frozen_cash + market_value (±0.01)
-- **Trade**:
-  - 所有字符串字段必填
-  - traded_price, traded_volume, traded_amount > 0
-  - direction ∈ {0, 48, 49}
-  - offset_flag ∈ {48, 49, 50, 51, 52, 53, 54}
-  - traded_amount = traded_price × traded_volume (±0.01)
 
 #### 3.3.3 LoaderService (加载器)
 
@@ -931,8 +914,8 @@ ETL 系统使用 DuckDB 的 PostgreSQL 扩展实现高性能数据操作：
 ```mermaid
 flowchart LR
     subgraph DuckDB["DuckDB In-Memory"]
-        CSV["CSV 数据"] --> TempTable["临时表"]
-        TempTable --> Query["SQL 查询"]
+        DF["Polars DataFrame"] --> TempTable["临时表"]
+        TempTable --> Query["SQL 查询/转换"]
     end
 
     subgraph PG["PostgreSQL (via pg 扩展)"]
@@ -940,7 +923,7 @@ flowchart LR
         Trade["pg.trade"]
     end
 
-    Query --> |attach_postgres| Asset
+    Query --> |upsert_to_postgres| Asset
     Query --> |upsert_to_postgres| Trade
     Asset --> |query_asset_statistics| Stats["统计结果"]
 ```
@@ -1015,17 +998,19 @@ def query_asset_statistics(self) -> dict[str, Any]:
 ```mermaid
 flowchart TD
     Start([开始]) --> Config["加载 Hydra 配置"]
-    Config --> ExtractA["Phase 1: 提取 Assets<br/>S3 → DuckDB → Polars"]
-    ExtractA --> ValidateA["Phase 2: 验证 Assets<br/>字段检查 + 业务规则"]
-    ValidateA --> LoadA["Phase 3: 加载 Assets<br/>批量 UPSERT"]
-    LoadA --> ExtractT["Phase 4: 提取 Trades<br/>S3 → DuckDB → Polars"]
-    ExtractT --> ValidateT["Phase 5: 验证 Trades<br/>字段检查 + FK检查"]
-    ValidateT --> LoadT["Phase 6: 加载 Trades<br/>批量 UPSERT"]
-    LoadT --> Analytics["Phase 7: 统计分析<br/>汇总有效数据"]
+    Config --> ReadA["Phase 1: 读取 Assets CSV<br/>Polars 从 S3 读取"]
+    ReadA --> ValidateA["Phase 2: 验证 Assets<br/>字段检查 + 业务规则"]
+    ValidateA --> ExtractA["Phase 3: 提取 Assets<br/>DuckDB 类型转换"]
+    ExtractA --> LoadA["Phase 4: 加载 Assets<br/>批量 UPSERT"]
+    LoadA --> ReadT["Phase 5: 读取 Trades CSV<br/>Polars 从 S3 读取"]
+    ReadT --> ValidateT["Phase 6: 验证 Trades<br/>字段检查 + FK检查"]
+    ValidateT --> ExtractT["Phase 7: 提取 Trades<br/>DuckDB 类型转换"]
+    ExtractT --> LoadT["Phase 8: 加载 Trades<br/>批量 UPSERT"]
+    LoadT --> Analytics["Phase 9: 统计分析<br/>汇总已入库数据"]
     Analytics --> Result["返回 PipelineResult"]
     Result --> End([结束])
 
-    ValidateA -->|无效数据| ErrorA["记录验证错误"]
+    ValidateA -->|无效数据| ErrorA["记录验证错误\n流程终止"]
     ValidateT -->|无效数据| ErrorT["记录验证错误"]
 ```
 
@@ -1033,13 +1018,13 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    S3["S3 CSV"] --> DuckDB["DuckDB<br/>load_csv_from_s3()"]
-    DuckDB --> Transform["Hydra Config<br/>类型转换"]
-    Transform --> Polars["Polars DataFrame"]
-    Polars --> Validate["ValidatorService"]
+    S3["S3 CSV"] --> Polars["Polars\n读取CSV"]
+    Polars --> Validate["ValidatorService\nPandera验证"]
     Validate --> Valid["有效数据"]
-    Validate --> Invalid["无效数据"]
-    Valid --> UPSERT["DuckDBClient<br/>upsert_to_postgres()"]
+    Validate --> Invalid["无效数据\n→日志记录"]
+    Valid --> DuckDB["DuckDB\n类型转换"]
+    DuckDB --> Extract["ExtractorService"]
+    Extract --> UPSERT["DuckDBClient\nupsert_to_postgres()"]
 ```
 
 ### 4.3 批处理流程

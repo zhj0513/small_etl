@@ -16,18 +16,21 @@
 
 ## 数据管道
 
-### ExtractorService - 数据提取
-- CSV 数据来源：S3（可通过 MinIO 模拟）
-- **DuckDB httpfs 直接读取**：使用 `load_csv_from_s3()` 直接从 S3 读取 CSV
-- **配置驱动转换**：使用 `configs/extractor/default.yaml` 定义列映射，根据 Hydra 配置进行类型转换
-- **智能类型检查**：转换前检查列类型，如果已是目标类型则跳过转换（避免 Datetime 重复解析等问题）
-
 ### ValidatorService - 数据验证
+- **Polars 读取 S3 CSV**：使用 Polars 读取 S3 上的 CSV 文件
 - **Pandera Schema 验证**：使用 `@pa.dataframe_check` 装饰器
   - 接收 `PolarsData` 参数，返回 `pl.LazyFrame`
   - 使用 `data.lazyframe.select()` 进行列式计算
-- **外键验证**：Trade 的 `account_id` 必须存在于已加载的 Asset 表中
+- **字段级验证**：所有字段没有空值
+- **业务规则验证**：
+  - Asset: `total_asset = cash + frozen_cash + market_value (±0.01)`
+  - Trade: `traded_amount = traded_price × traded_volume (±0.01)`
 - **验证容差**：`DEFAULT_TOLERANCE = 0.01`（处理浮点数精度问题）
+
+### ExtractorService - 数据提取
+- **DuckDB 读取验证后的数据**：使用 DuckDB 读取验证后的 Polars DataFrame
+- **配置驱动转换**：使用 `configs/extractor/default.yaml` 定义列映射，根据 Hydra 配置进行类型转换
+- **智能类型检查**：转换前检查列类型，如果已是目标类型则跳过转换（避免 Datetime 重复解析等问题）
 
 ### LoaderService - 数据写入
 - 使用 DuckDB 的 PostgreSQL 插件进行批量 UPSERT
@@ -40,6 +43,16 @@
 ### AnalyticsService - 数据分析
 - 用 DuckDB 直接查询 PostgreSQL 中的已入库数据（`pg.asset`, `pg.trade`）
 - 支持多维度聚合：按 account_type、strategy_name、offset_flag 分组
+- 聚合统计：账户资产均值、账户资产总量
+
+## 数据处理顺序
+
+Assets 必须先于 Trades 处理（外键约束：Trade.account_id → Asset.account_id）
+
+**完整数据流：**
+```
+S3 CSV → Polars 读取 → ValidatorService 验证 → (有效→DuckDB, 无效→日志) → ExtractorService 提取 → LoadService 入库 → PostgreSQL → AnalyticsService 分析
+```
 
 ## 必须遵守的约束
 - 资产表、交易表必须用 SQLModel 定义
@@ -47,11 +60,17 @@
 - 金额相关的字段禁止使用 float ，统一使用 Decimal（数据库层）
 - 所有时间字段统一使用 UTC
 - 所有配置集中在 pyproject.toml 与 Hydra
+- **数据验证优先**：必须先验证 CSV 数据的合法性，验证不通过则流程终止
 
 ### Pandera Schema 约束
 - 必须使用 `@pa.dataframe_check` 装饰器进行业务规则验证
 - 验证方法必须接收 `PolarsData` 参数，返回 `pl.LazyFrame`
 - 计算字段验证容差：`DEFAULT_TOLERANCE = 0.01`
+- **字段级验证**：所有字段没有空值
+- **业务规则验证**：
+  - Asset: `total_asset = cash + frozen_cash + market_value (±0.01)`
+  - Trade: `traded_amount = traded_price × traded_volume (±0.01)`
+- **外键验证**：Trade 的 `account_id` 必须存在于已加载的 Asset 表中
 
 ### 时间戳格式
 - CSV 解析格式：`%Y-%m-%dT%H:%M:%S%.f`（ISO 8601 带微秒）
