@@ -103,7 +103,7 @@ enabled: true
 check_interval: 1  # 秒
 jobs:
   - job_id: daily_full_etl
-    command: run          # run | assets | trades
+    command: run          # 仅支持 run
     interval: day         # day | hour | minute
     at: "02:00"          # 仅 day 有效
     enabled: true
@@ -117,6 +117,7 @@ tests/
 ├── conftest.py              # 共享 fixtures
 ├── unit/                    # 单元测试（无外部依赖）
 │   ├── test_analytics.py
+│   ├── test_cli.py
 │   ├── test_duckdb.py
 │   ├── test_models.py
 │   ├── test_pipeline.py
@@ -163,8 +164,20 @@ class ValidationError:
 | 0 | 成功 |
 | 1 | 一般错误 |
 | 2 | 参数错误 |
-| 3 | 连接错误 (S3/DB) |
-| 4 | 验证错误 (有无效数据) |
+
+### CLI 命令
+CLI 使用 argparse 解析命令，支持 Hydra 配置覆盖（key=value 语法）。
+
+**支持的命令:**
+- `run` - 运行完整 ETL 流程（assets + trades）
+- `clean` - 清空数据表
+- `schedule` - 定时任务管理（start/add/list/remove/pause/resume）
+
+**Hydra 配置覆盖示例:**
+```bash
+pixi run python -m small_etl run db=test
+pixi run python -m small_etl run db.host=192.168.1.100 etl.batch_size=5000
+```
 
 ## 文档规范
 

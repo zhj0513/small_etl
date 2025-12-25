@@ -134,15 +134,11 @@ flowchart LR
     subgraph CLI["CLI Entry Point"]
         MAIN["main()"] --> PARSE["parse_args()"]
         PARSE --> RUN["run"]
-        PARSE --> ASSETS["assets"]
-        PARSE --> TRADES["trades"]
         PARSE --> CLEAN["clean"]
         PARSE --> SCHEDULE["schedule"]
     end
 
     RUN --> Pipeline["ETLPipeline.run()"]
-    ASSETS --> Pipeline2["ETLPipeline.run_assets_only()"]
-    TRADES --> Pipeline3["ETLPipeline.run_trades_only()"]
     CLEAN --> Repo["PostgresRepository.truncate_tables()"]
     SCHEDULE --> Scheduler["ETLScheduler"]
 ```
@@ -157,46 +153,23 @@ flowchart LR
 # 完整 ETL 流程
 pixi run python -m small_etl run
 
-# 仅处理 Assets
-pixi run python -m small_etl assets
-
-# 仅处理 Trades
-pixi run python -m small_etl trades
-
 # 清空数据表 (truncate asset 和 trade 表)
 pixi run python -m small_etl clean
 
 # 定时任务管理
-pixi run python -m small_etl schedule start|add|list|remove
+pixi run python -m small_etl schedule start|add|list|remove|pause|resume
 ```
 
-**通用参数:**
+**Hydra 配置覆盖 (key=value 语法):**
 
-| 参数 | 短选项 | 说明 | 默认值 |
-|------|--------|------|--------|
-| `--env` | `-e` | 环境配置 (dev/test) | dev |
-| `--batch-size` | `-b` | 批处理大小 | 10000 |
-| `--verbose` | `-v` | 详细输出 | False |
-| `--dry-run` | | 仅验证不加载 | False |
-
-**S3 参数覆盖:**
-
-| 参数 | 说明 |
-|------|------|
-| `--s3-endpoint` | S3/MinIO 端点 |
-| `--s3-bucket` | S3 bucket 名称 |
-| `--assets-file` | Assets CSV 文件名 |
-| `--trades-file` | Trades CSV 文件名 |
-
-**数据库参数覆盖:**
-
-| 参数 | 说明 |
-|------|------|
-| `--db-host` | 数据库主机 |
-| `--db-port` | 数据库端口 |
-| `--db-name` | 数据库名称 |
-| `--db-user` | 数据库用户 |
-| `--db-password` | 数据库密码 |
+| 覆盖示例 | 说明 |
+|----------|------|
+| `db=test` | 使用测试环境数据库配置 |
+| `db.host=192.168.1.100` | 覆盖数据库主机 |
+| `db.port=5432` | 覆盖数据库端口 |
+| `etl.batch_size=5000` | 覆盖批处理大小 |
+| `s3.bucket=my-bucket` | 覆盖 S3 bucket |
+| `s3.assets_file=data.csv` | 覆盖资产文件名 |
 
 #### 3.1.2 接口定义
 
@@ -205,36 +178,38 @@ def main() -> int:
     """CLI 入口函数，返回退出码"""
     ...
 
-def parse_args(args: list[str] | None = None) -> argparse.Namespace:
-    """解析命令行参数"""
+def parse_args(args: list[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
+    """解析命令行参数，返回 (解析结果, Hydra覆盖列表)"""
     ...
 
-def run_pipeline(args: argparse.Namespace) -> int:
+def build_config(hydra_overrides: list[str]) -> dict[str, Any]:
+    """构建 Hydra 配置"""
+    ...
+
+def run_pipeline(args: argparse.Namespace, hydra_overrides: list[str]) -> int:
     """执行 ETL Pipeline"""
     ...
 
-def print_result(result: PipelineResult, verbose: bool = False) -> None:
-    """格式化输出执行结果"""
+def print_result(result: PipelineResult) -> None:
+    """格式化输出执行结果（通用，支持任意数据类型）"""
     ...
 ```
 
 #### 3.1.3 使用示例
 
 ```bash
+# 运行 ETL
+pixi run python -m small_etl run
+
 # 使用测试环境配置
-pixi run python -m small_etl.cli run --env test
+pixi run python -m small_etl run db=test
 
-# 自定义批处理大小和详细输出
-pixi run python -m small_etl.cli run --batch-size 5000 --verbose
+# 覆盖多个配置
+pixi run python -m small_etl run db.host=192.168.1.100 etl.batch_size=5000
 
-# 仅验证数据，不写入数据库
-pixi run python -m small_etl.cli run --dry-run
-
-# 覆盖 S3 配置
-pixi run python -m small_etl.cli run --s3-bucket my-bucket --assets-file data.csv
-
-# 覆盖数据库配置
-pixi run python -m small_etl.cli run --db-host 192.168.1.100 --db-port 5432
+# 清空数据表
+pixi run python -m small_etl clean
+pixi run python -m small_etl clean db=test
 ```
 
 #### 3.1.4 退出码
@@ -244,24 +219,10 @@ pixi run python -m small_etl.cli run --db-host 192.168.1.100 --db-port 5432
 | 0 | 成功 |
 | 1 | 一般错误 |
 | 2 | 参数错误 |
-| 3 | 连接错误 (S3/DB) |
-| 4 | 验证错误 (有无效数据) |
 
 #### 3.1.5 clean 命令
 
 `clean` 命令用于清空数据库中的 asset 和 trade 表，方便测试时重置数据。
-
-**参数:**
-
-| 参数 | 短选项 | 说明 | 默认值 |
-|------|--------|------|--------|
-| `--env` | `-e` | 环境配置 (dev/test) | dev |
-| `--verbose` | `-v` | 详细输出 | False |
-| `--db-host` | | 数据库主机 | 配置文件 |
-| `--db-port` | | 数据库端口 | 配置文件 |
-| `--db-name` | | 数据库名称 | 配置文件 |
-| `--db-user` | | 数据库用户 | 配置文件 |
-| `--db-password` | | 数据库密码 | 配置文件 |
 
 **使用示例:**
 
@@ -270,10 +231,10 @@ pixi run python -m small_etl.cli run --db-host 192.168.1.100 --db-port 5432
 pixi run python -m small_etl clean
 
 # 清空测试环境数据
-pixi run python -m small_etl clean --env test
+pixi run python -m small_etl clean db=test
 
 # 清空指定数据库
-pixi run python -m small_etl clean --db-host 192.168.1.100 --db-name mydb
+pixi run python -m small_etl clean db.host=192.168.1.100 db.database=mydb
 ```
 
 ### 3.2 Scheduler 组件
@@ -340,7 +301,7 @@ class ETLScheduler:
 pixi run python -m small_etl schedule start
 
 # 添加定时任务
-pixi run python -m small_etl schedule add --job-id <id> --etl-command <cmd> --interval <interval> [--at <time>]
+pixi run python -m small_etl schedule add --job-id <id> --etl-command run --interval <interval> [--at <time>]
 
 # 列出所有任务
 pixi run python -m small_etl schedule list
@@ -360,7 +321,7 @@ pixi run python -m small_etl schedule resume --job-id <id>
 | 参数 | 说明 | 示例 |
 |------|------|------|
 | `--job-id` | 任务唯一标识符 | `daily_etl` |
-| `--etl-command` | ETL 命令 (run/assets/trades) | `run` |
+| `--etl-command` | ETL 命令 (仅支持 run) | `run` |
 | `--interval` | 调度间隔 (day/hour/minute) | `day` |
 | `--at` | 执行时间点 (仅 day 间隔有效) | `02:00` |
 
@@ -370,8 +331,8 @@ pixi run python -m small_etl schedule resume --job-id <id>
 # 每天凌晨2点执行完整ETL
 pixi run python -m small_etl schedule add --job-id daily_etl --etl-command run --interval day --at "02:00"
 
-# 每小时执行assets同步
-pixi run python -m small_etl schedule add --job-id hourly_assets --etl-command assets --interval hour
+# 每小时执行
+pixi run python -m small_etl schedule add --job-id hourly_etl --etl-command run --interval hour
 
 # 每分钟执行（测试用）
 pixi run python -m small_etl schedule add --job-id test_job --etl-command run --interval minute
@@ -1303,31 +1264,16 @@ src/small_etl/
 pixi run python -m small_etl run
 
 # 使用测试环境
-pixi run python -m small_etl run --env test
+pixi run python -m small_etl run db=test
 
-# 仅处理 Assets
-pixi run python -m small_etl assets
-
-# 仅处理 Trades
-pixi run python -m small_etl trades
+# 覆盖多个配置
+pixi run python -m small_etl run db.host=192.168.1.100 etl.batch_size=5000 s3.bucket=my-bucket
 
 # 清空数据表
 pixi run python -m small_etl clean
 
 # 清空测试环境数据表
-pixi run python -m small_etl clean --env test
-
-# 自定义参数
-pixi run python -m small_etl run --batch-size 5000 --verbose
-
-# 仅验证不加载
-pixi run python -m small_etl run --dry-run
-
-# 覆盖 S3 配置
-pixi run python -m small_etl run --s3-bucket my-bucket --assets-file custom.csv
-
-# 覆盖数据库配置
-pixi run python -m small_etl run --db-host 192.168.1.100 --db-port 5432
+pixi run python -m small_etl clean db=test
 ```
 
 ### 11.2 Python 脚本调用
@@ -1351,27 +1297,7 @@ with ETLPipeline(config) as pipeline:
         print(f"Error: {result.error_message}")
 ```
 
-### 11.3 单独运行 Assets 或 Trades
-
-```python
-# 只处理 Assets
-result = pipeline.run_assets_only()
-
-# 只处理 Trades (需要 Assets 已加载)
-result = pipeline.run_trades_only()
-```
-
-### 11.4 数据库初始化
-
-```bash
-# 创建测试数据库
-pixi run python -m small_etl.data_access.db_setup
-
-# 运行 Alembic 迁移
-ETL_ENV=test pixi run alembic upgrade head
-```
-
-### 11.5 定时任务
+### 11.3 定时任务
 
 ```bash
 # 启动调度器（前台阻塞运行）
@@ -1380,8 +1306,8 @@ pixi run python -m small_etl schedule start
 # 添加每天凌晨2点执行完整ETL
 pixi run python -m small_etl schedule add --job-id daily_etl --etl-command run --interval day --at "02:00"
 
-# 添加每小时执行assets同步
-pixi run python -m small_etl schedule add --job-id hourly_assets --etl-command assets --interval hour
+# 添加每小时执行
+pixi run python -m small_etl schedule add --job-id hourly_etl --etl-command run --interval hour
 
 # 查看所有定时任务
 pixi run python -m small_etl schedule list

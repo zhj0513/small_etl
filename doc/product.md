@@ -53,9 +53,8 @@ flowchart LR
 - 支持多维度聚合：按账户类型、策略、开平标志分组
 
 ### 5. 命令行界面
-- 支持 run/assets/trades/clean/schedule 命令
-- 环境切换：`--env dev|test`
-- 参数覆盖：`--batch-size`、`--db-host` 等
+- 支持 run/clean/schedule 命令
+- 使用 Hydra 配置覆盖：`db=test`、`etl.batch_size=5000` 等
 
 ### 6. 定时任务管理
 - APScheduler 支持周期性 ETL 执行
@@ -81,22 +80,13 @@ flowchart LR
 pixi run python -m small_etl run
 
 # 使用测试环境
-pixi run python -m small_etl run --env test
+pixi run python -m small_etl run db=test
 
-# 仅处理 Assets
-pixi run python -m small_etl assets
-
-# 仅处理 Trades
-pixi run python -m small_etl trades
+# 覆盖多个配置
+pixi run python -m small_etl run db.host=192.168.1.100 etl.batch_size=5000
 
 # 清空数据表
 pixi run python -m small_etl clean
-
-# 仅验证不加载
-pixi run python -m small_etl run --dry-run
-
-# 自定义批处理大小
-pixi run python -m small_etl run --batch-size 5000
 
 # 定时任务管理
 pixi run python -m small_etl schedule start
@@ -114,13 +104,15 @@ class PipelineResult:
     success: bool                           # 是否成功
     started_at: datetime                    # 开始时间
     completed_at: datetime                  # 完成时间
-    assets_validation: ValidationResult     # 资产验证结果
-    trades_validation: ValidationResult     # 交易验证结果
-    assets_load: LoadResult                 # 资产加载结果
-    trades_load: LoadResult                 # 交易加载结果
-    assets_stats: AssetStatistics | None    # 资产统计
-    trades_stats: TradeStatistics | None    # 交易统计
+    results: dict[str, DataTypeResult]      # 各数据类型的处理结果
     error_message: str | None               # 错误信息
+
+@dataclass
+class DataTypeResult:
+    data_type: str                          # 数据类型名称 (如 "asset", "trade")
+    validation: ValidationResult | None     # 验证结果
+    load: LoadResult | None                 # 加载结果
+    statistics: Any                         # 统计信息
 ```
 
 ### ValidationResult 结构

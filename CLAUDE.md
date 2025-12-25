@@ -111,6 +111,38 @@ Hydra configs in `configs/`:
 
 Default test database: `postgresql://etl:etlpass@localhost:15432/etl_test_db`
 
+### CLI Commands
+
+CLI uses argparse with Hydra config overrides (key=value syntax).
+
+**Available commands:**
+- `run` - Run complete ETL pipeline (assets + trades)
+- `clean` - Truncate asset and trade tables
+- `schedule` - Manage scheduled tasks (start/add/list/remove/pause/resume)
+
+**Examples:**
+```bash
+# Run ETL
+pixi run python -m small_etl run
+pixi run python -m small_etl run db=test
+pixi run python -m small_etl run db.host=192.168.1.100 etl.batch_size=5000
+
+# Clean tables
+pixi run python -m small_etl clean
+pixi run python -m small_etl clean db=test
+
+# Schedule commands
+pixi run python -m small_etl schedule start
+pixi run python -m small_etl schedule add --job-id daily_etl --etl-command run --interval day --at 02:00
+pixi run python -m small_etl schedule list
+```
+
+**Hydra override syntax:**
+- `key=value` - Override a config value
+- `key.subkey=value` - Override nested config value
+- `+key=value` - Add a new key
+- `~key` - Remove a key
+
 ## Test Structure
 
 ```
@@ -118,6 +150,7 @@ tests/
 ├── conftest.py              # Shared fixtures (test_db_engine, sample data)
 ├── unit/                    # Unit tests (no external dependencies)
 │   ├── test_analytics.py
+│   ├── test_cli.py
 │   ├── test_duckdb.py
 │   ├── test_extractor.py
 │   ├── test_models.py

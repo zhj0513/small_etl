@@ -383,7 +383,7 @@ class TestSchedulerCLI:
         assert result == EXIT_SUCCESS
 
         captured = capsys.readouterr()
-        assert "Job Added Successfully" in captured.out
+        assert "Job added" in captured.out
         assert unique_job_id in captured.out
 
     def test_run_schedule_list_empty(self, config, capsys):
@@ -411,8 +411,7 @@ class TestSchedulerCLI:
         assert result == EXIT_SUCCESS
 
         captured = capsys.readouterr()
-        assert "Scheduled Jobs (0 total)" in captured.out
-        assert "No jobs configured" in captured.out
+        assert "Scheduled Jobs (0)" in captured.out
 
     def test_run_schedule_remove_not_found(self, config, capsys):
         """Test schedule remove command for non-existent job."""
