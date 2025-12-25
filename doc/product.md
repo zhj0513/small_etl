@@ -17,7 +17,8 @@
 
 ```mermaid
 flowchart LR
-    S3["S3/MinIO<br/>CSV文件"] --> Extract["提取<br/>ExtractorService"]
+    S3["S3/MinIO<br/>CSV文件"] --> DuckDB["DuckDB httpfs<br/>直接读取S3"]
+    DuckDB --> Extract["提取<br/>ExtractorService"]
     Extract --> Validate["验证<br/>ValidatorService"]
     Validate --> |有效数据| Load["加载<br/>LoaderService"]
     Validate --> |无效数据| Log["错误日志"]
@@ -30,9 +31,9 @@ flowchart LR
 ## 核心功能
 
 ### 1. 数据提取
-- 从 S3 CSV 文件读取数据
+- DuckDB 通过 httpfs 扩展直接从 S3 读取 CSV 文件
 - 支持 Hydra 配置驱动的列映射和类型转换（`configs/extractor/default.yaml`）
-- 双模式提取：配置驱动（Polars）或 DuckDB 自动型
+- 智能类型转换：自动检测列类型，避免重复转换
 
 ### 2. 数据验证
 - **字段级验证**：Pandera Schema 定义类型、范围、枚举值

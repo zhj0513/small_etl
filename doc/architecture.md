@@ -9,7 +9,7 @@ Small ETL 是一个批量数据 ETL 系统，用于将 S3 CSV 文件中的资产
 ```mermaid
 flowchart LR
     subgraph SYS["Small ETL System"]
-        S3["S3/MinIO\n(CSV Files)"] --> DuckDB["DuckDB\n(Data Transform)"]
+        S3["S3/MinIO\n(CSV Files)"] --> DuckDB["DuckDB\n(httpfs + Transform)"]
         DuckDB --> Validator["Validator\n(Pandera Schema)"]
         Validator --> PG["PostgreSQL\n(Database)"]
         PG --> Analytics["Analytics\n(Statistics)"]
@@ -69,8 +69,7 @@ flowchart TB
     %% Data Access Layer
     %% ======================
     subgraph DAL["Data Access Layer (数据访问层)"]
-        S3["S3Connector<br/>MinIO客户端"]
-        DUCK["DuckDBClient<br/>内存数据库"]
+        DUCK["DuckDBClient<br/>httpfs S3读取 + PG插件"]
         PG["PostgresRepository<br/>UPSERT操作"]
     end
 
@@ -118,8 +117,7 @@ flowchart TB
 - **AnalyticsService**: 对有效数据进行统计分析
 
 #### Data Access Layer (数据访问层)
-- **S3Connector**: MinIO/S3 文件操作封装
-- **DuckDBClient**: 内存数据库操作，CSV 加载和 SQL 查询
+- **DuckDBClient**: 内存数据库操作，通过 httpfs 扩展直接读取 S3 CSV，支持 PostgreSQL 插件写入
 - **PostgresRepository**: 数据库 CRUD 操作，支持批量 UPSERT
 
 #### Domain Layer (领域层)
@@ -416,45 +414,37 @@ flowchart LR
 #### 3.3.1 ExtractorService (提取器)
 
 **职责:**
-- 连接 S3/MinIO 存储
-- 读取 CSV 文件为字节流
-- 通过 DuckDB 或 Polars 加载并转换数据类型
+- 通过 DuckDB httpfs 扩展直接从 S3 读取 CSV
+- 根据 Hydra 配置进行列转换和类型映射
 - 返回 Polars DataFrame
 
 **接口:**
 ```python
 class ExtractorService:
-    def __init__(self, s3_connector: S3Connector, duckdb_client: DuckDBClient, config: DictConfig | None = None): ...
-    def extract_assets(self, bucket: str, object_name: str) -> pl.DataFrame: ...
-    def extract_trades(self, bucket: str, object_name: str) -> pl.DataFrame: ...
+    def __init__(self, duckdb_client: DuckDBClient, config: DictConfig | None = None): ...
+    def extract(self, bucket: str, object_name: str, data_type: str) -> pl.DataFrame: ...
 ```
 
-**双模式提取实现:**
+**DuckDB 直接读取 S3 实现:**
 
-ExtractorService 支持两种提取模式，根据配置自动选择：
+ExtractorService 使用 DuckDB 的 httpfs 扩展直接从 S3 读取 CSV，然后根据 Hydra 配置进行类型转换：
 
 ```python
-def extract_assets(self, bucket: str, object_name: str) -> pl.DataFrame:
-    csv_bytes = self._s3.download_csv(bucket, object_name)
+def extract(self, bucket: str, object_name: str, data_type: str) -> pl.DataFrame:
+    config = DataTypeRegistry.get(data_type)
+    logger.info(f"Extracting {data_type} from s3://{bucket}/{object_name}")
 
-    if self._config is not None and hasattr(self._config, "assets"):
-        # 模式1: 配置驱动 - 使用 Polars + Hydra 列映射
-        df = pl.read_csv(io.BytesIO(csv_bytes), has_header=True, infer_schema_length=10000)
-        df = self._transform_dataframe(df, self._config.assets.columns)
-        # 输出: "Extracted N asset records (config-driven)"
-    else:
-        # 模式2: DuckDB 自动型 - SQL 类型转换
-        self._duckdb.load_csv_bytes(csv_bytes, "raw_assets")
-        df = self._duckdb.query("""
-            SELECT
-                id,
-                CAST(account_id AS VARCHAR) as account_id,
-                account_type,
-                CAST(cash AS DECIMAL(20, 2)) as cash,
-                ...
-            FROM raw_assets
-        """)
-        # 输出: "Extracted N asset records (DuckDB fallback)"
+    # DuckDB 直接从 S3 读取 CSV（使用 httpfs 扩展）
+    self._duckdb.load_csv_from_s3(bucket, object_name, config.raw_table_name)
+    df = self._duckdb.query(f"SELECT * FROM {config.raw_table_name}")
+
+    # 根据 Hydra 配置进行类型转换
+    config_attr = f"{data_type}s"  # e.g., "assets", "trades"
+    if self._config is not None and hasattr(self._config, config_attr):
+        type_config = getattr(self._config, config_attr)
+        df = self._transform_dataframe(df, type_config.columns)
+
+    logger.info(f"Extracted {len(df)} {data_type} records")
     return df
 ```
 
@@ -462,34 +452,53 @@ def extract_assets(self, bucket: str, object_name: str) -> pl.DataFrame:
 
 ```python
 def _transform_dataframe(self, df: pl.DataFrame, columns_config: list[Any]) -> pl.DataFrame:
-    """根据 Hydra 配置进行列转换"""
+    """根据 Hydra 配置进行列转换（带类型检查）"""
     expressions = []
     for col_cfg in columns_config:
         csv_name = col_cfg.csv_name    # CSV 中的原始列名
         target_name = col_cfg.name     # 目标列名
         dtype = col_cfg.dtype          # 目标数据类型
+        col_dtype = df[csv_name].dtype  # 当前列类型
 
         if dtype == "Datetime":
-            fmt = getattr(col_cfg, "format", "%Y-%m-%dT%H:%M:%S")
-            expr = pl.col(csv_name).str.to_datetime(fmt).alias(target_name)
+            # 如果已经是 Datetime 类型，只重命名；否则从字符串解析
+            if col_dtype == pl.Datetime or str(col_dtype).startswith("Datetime"):
+                expr = pl.col(csv_name).alias(target_name)
+            else:
+                fmt = getattr(col_cfg, "format", "%Y-%m-%dT%H:%M:%S")
+                expr = pl.col(csv_name).str.to_datetime(fmt).alias(target_name)
         elif dtype == "Float64":
-            expr = pl.col(csv_name).cast(pl.Float64).alias(target_name)
-        elif dtype == "Utf8":
-            expr = pl.col(csv_name).cast(pl.Utf8).alias(target_name)
-        elif dtype in ("Int32", "Int64"):
-            expr = pl.col(csv_name).cast(getattr(pl, dtype)()).alias(target_name)
-        else:
-            expr = pl.col(csv_name).alias(target_name)
+            if col_dtype == pl.Float64:
+                expr = pl.col(csv_name).alias(target_name)
+            else:
+                expr = pl.col(csv_name).cast(pl.Float64).alias(target_name)
+        # 类似处理 Utf8, Int32, Int64...
         expressions.append(expr)
 
     return df.select(expressions)
 ```
 
-**模式选择条件:**
-| 条件 | 选择模式 | 优势 |
-|------|----------|------|
-| `config` 包含 `assets`/`trades` 配置 | 配置驱动 (Polars) | 灵活的列映射和类型转换 |
-| `config` 为空或无对应配置 | DuckDB 自动型 | 快速启动，自动类型推断 |
+**DuckDB httpfs S3 配置:**
+
+DuckDBClient 在初始化时配置 S3 访问：
+```python
+def _configure_s3(self, s3_config: "DictConfig") -> None:
+    self._conn.execute("INSTALL httpfs")
+    self._conn.execute("LOAD httpfs")
+    self._conn.execute(f"SET s3_endpoint='{endpoint}'")
+    self._conn.execute(f"SET s3_access_key_id='{access_key}'")
+    self._conn.execute(f"SET s3_secret_access_key='{secret_key}'")
+    self._conn.execute(f"SET s3_use_ssl={str(secure).lower()}")
+    self._conn.execute("SET s3_url_style='path'")
+
+def load_csv_from_s3(self, bucket: str, object_name: str, table_name: str) -> None:
+    s3_path = f"s3://{bucket}/{object_name}"
+    self._conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+    self._conn.execute(f"""
+        CREATE TABLE {table_name} AS
+        SELECT * FROM read_csv_auto('{s3_path}', header=true, timestampformat='%Y-%m-%dT%H:%M:%S')
+    """)
+```
 
 **Hydra 列映射配置示例 (`configs/extractor/default.yaml`):**
 
@@ -1063,9 +1072,9 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    CSV["S3 CSV<br/>(bytes)"] --> DuckDB["DuckDB<br/>load_csv_bytes()"]
-    DuckDB --> SQL["SQL CAST<br/>类型转换"]
-    SQL --> Polars["Polars DataFrame"]
+    S3["S3 CSV"] --> DuckDB["DuckDB<br/>load_csv_from_s3()"]
+    DuckDB --> Transform["Hydra Config<br/>类型转换"]
+    Transform --> Polars["Polars DataFrame"]
     Polars --> Validate["ValidatorService"]
     Validate --> Valid["有效数据"]
     Validate --> Invalid["无效数据"]
@@ -1247,11 +1256,11 @@ src/small_etl/
 │   ├── __init__.py          # 导出 models, enums, schemas
 │   ├── models.py            # Asset, Trade (SQLModel)
 │   ├── enums.py             # AccountType, Direction, OffsetFlag (IntEnum)
-│   └── schemas.py           # AssetSchema, TradeSchema (Pandera)
+│   ├── schemas.py           # AssetSchema, TradeSchema (Pandera)
+│   └── registry.py          # DataTypeRegistry (数据类型注册)
 ├── data_access/
 │   ├── __init__.py
-│   ├── s3_connector.py      # S3Connector (MinIO 客户端)
-│   ├── duckdb_client.py     # DuckDBClient (内存数据库)
+│   ├── duckdb_client.py     # DuckDBClient (httpfs S3读取 + PG插件)
 │   ├── postgres_repository.py  # PostgresRepository
 │   └── db_setup.py          # 数据库初始化工具
 ├── services/
@@ -1260,7 +1269,7 @@ src/small_etl/
 │   ├── validator.py         # ValidatorService, ValidationResult, ValidationError
 │   ├── loader.py            # LoaderService, LoadResult
 │   └── analytics.py         # AnalyticsService, AssetStatistics, TradeStatistics
-├── scheduler/                   # 新增: 调度模块
+├── scheduler/               # 调度模块
 │   ├── __init__.py
 │   └── scheduler.py         # ETLScheduler, ScheduledJob
 ├── application/

@@ -18,10 +18,9 @@
 
 ### ExtractorService - 数据提取
 - CSV 数据来源：S3（可通过 MinIO 模拟）
-- **双模式提取**：
-  - **配置驱动模式**：使用 `configs/extractor/default.yaml` 定义列映射，Polars 进行类型转换
-  - **DuckDB 自动模式**：使用 `load_csv_bytes()` + SQL CAST 进行类型转换
-- 模式选择：如果 Hydra config 包含 `extractor.assets/trades` 配置则使用配置驱动，否则回退到 DuckDB
+- **DuckDB httpfs 直接读取**：使用 `load_csv_from_s3()` 直接从 S3 读取 CSV
+- **配置驱动转换**：使用 `configs/extractor/default.yaml` 定义列映射，根据 Hydra 配置进行类型转换
+- **智能类型检查**：转换前检查列类型，如果已是目标类型则跳过转换（避免 Datetime 重复解析等问题）
 
 ### ValidatorService - 数据验证
 - **Pandera Schema 验证**：使用 `@pa.dataframe_check` 装饰器
@@ -56,7 +55,8 @@
 
 ### 时间戳格式
 - CSV 解析格式：`%Y-%m-%dT%H:%M:%S%.f`（ISO 8601 带微秒）
-- DuckDB CSV 导入格式：`timestampformat='%Y-%m-%dT%H:%M:%S'`
+- DuckDB CSV 导入格式：`timestampformat='%Y-%m-%dT%H:%M:%S'`（DuckDB `read_csv_auto` 自动推断类型时使用）
+- DuckDB 读取后时区：`datetime[μs, Asia/Shanghai]`，转换时自动检测跳过
 
 ## 配置文件结构
 

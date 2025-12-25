@@ -58,8 +58,8 @@ This is a batch ETL system for syncing S3 CSV files to PostgreSQL with DuckDB-ba
 
 ```
 src/small_etl/
-├── domain/          # Data models (SQLModel), enums, Pandera schemas
-├── data_access/     # S3Connector, DuckDBClient, PostgresRepository
+├── domain/          # Data models (SQLModel), enums, Pandera schemas, DataTypeRegistry
+├── data_access/     # DuckDBClient, PostgresRepository
 ├── services/        # ExtractorService, ValidatorService, LoaderService, AnalyticsService
 ├── config/          # Configuration utilities
 └── application/     # ETLPipeline orchestration
@@ -69,9 +69,9 @@ src/small_etl/
 
 ```mermaid
 flowchart LR
-    S3[S3 CSV] --> Extractor
-    Extractor --> DuckDB[DuckDB Validation]
-    DuckDB --> Validator
+    S3[S3 CSV] --> DuckDB[DuckDB]
+    DuckDB --> Extractor
+    Extractor --> Validator
     Validator --> Loader
     Loader --> PostgreSQL
     PostgreSQL --> Analytics
@@ -80,13 +80,12 @@ flowchart LR
 ### Key Components
 
 - **ETLPipeline** (`application/pipeline.py`): Main orchestrator, use `with ETLPipeline(config) as pipeline`
-- **ExtractorService** (`services/extractor.py`): Reads CSV from S3, returns Polars DataFrame
+- **ExtractorService** (`services/extractor.py`): Uses DuckDB to read CSV directly from S3, returns Polars DataFrame
 - **ValidatorService** (`services/validator.py`): Field-level + business rule validation with Pandera schemas
 - **LoaderService** (`services/loader.py`): Batch loads validated data to PostgreSQL
 - **AnalyticsService** (`services/analytics.py`): Provides statistics and analysis
 - **PostgresRepository** (`data_access/postgres_repository.py`): Database operations (queries, truncate)
-- **DuckDBClient** (`data_access/duckdb_client.py`): In-memory data validation
-- **S3Connector** (`data_access/s3_connector.py`): MinIO/S3 file operations
+- **DuckDBClient** (`data_access/duckdb_client.py`): In-memory data operations, S3 access via httpfs, PostgreSQL attachment
 
 ### Data Models
 
@@ -106,8 +105,9 @@ Validation rules:
 Hydra configs in `configs/`:
 - `config.yaml`: Main config entry point
 - `db/dev.yaml`, `db/test.yaml`: Database connection (supports env vars: `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`)
-- `s3/dev.yaml`: MinIO/S3 connection
+- `s3/dev.yaml`: MinIO/S3 connection (used by DuckDB httpfs)
 - `etl/default.yaml`: batch_size, validation tolerance
+- `extractor/default.yaml`: CSV column mappings and data type conversions
 
 Default test database: `postgresql://etl:etlpass@localhost:15432/etl_test_db`
 
@@ -119,6 +119,7 @@ tests/
 ├── unit/                    # Unit tests (no external dependencies)
 │   ├── test_analytics.py
 │   ├── test_duckdb.py
+│   ├── test_extractor.py
 │   ├── test_models.py
 │   ├── test_pipeline.py
 │   └── test_validator.py
@@ -139,10 +140,9 @@ tests/
 Key dependencies (managed via pixi):
 - Python 3.12
 - SQLModel, Alembic (ORM and migrations)
-- DuckDB, Polars, PyArrow (data processing)
+- DuckDB, Polars, PyArrow (data processing, S3 access via httpfs)
 - Pandera (schema validation)
 - Hydra (configuration)
-- MinIO (S3 client)
 - psycopg2-binary (PostgreSQL driver)
 
 Dev tools: pytest, pytest-cov, ruff, pyright, pyrefly
