@@ -36,12 +36,10 @@ class ValidatorService:
     """Service for reading S3 CSV and validating data using Pandera schemas.
 
     Args:
-        tolerance: Tolerance for calculated field comparisons (default: 0.01).
         s3_config: S3 configuration for reading CSV files.
     """
 
-    def __init__(self, tolerance: float = 0.01, s3_config: "DictConfig | None" = None) -> None:
-        self._tolerance = tolerance
+    def __init__(self, s3_config: "DictConfig | None" = None) -> None:
         self._s3_config = s3_config
         self._storage_options: dict[str, Any] | None = None
 
@@ -127,6 +125,30 @@ class ValidatorService:
 
         return "; ".join(errors)
 
+    def _convert_to_decimal(self, df: pl.DataFrame, data_type: str) -> pl.DataFrame:
+        """Convert monetary fields to Decimal(20, 2) type for precise validation.
+
+        Args:
+            df: DataFrame with float columns.
+            data_type: Data type name (e.g., "asset", "trade").
+
+        Returns:
+            DataFrame with monetary fields converted to Decimal.
+        """
+        if data_type == "asset":
+            return df.with_columns([
+                pl.col("cash").cast(pl.Decimal(20, 2)),
+                pl.col("frozen_cash").cast(pl.Decimal(20, 2)),
+                pl.col("market_value").cast(pl.Decimal(20, 2)),
+                pl.col("total_asset").cast(pl.Decimal(20, 2)),
+            ])
+        elif data_type == "trade":
+            return df.with_columns([
+                pl.col("traded_price").cast(pl.Decimal(20, 2)),
+                pl.col("traded_amount").cast(pl.Decimal(20, 2)),
+            ])
+        return df
+
     def validate(
         self,
         df: pl.DataFrame,
@@ -152,6 +174,9 @@ class ValidatorService:
 
         if len(df) == 0:
             return ValidationResult(is_valid=True, data=df)
+
+        # Convert monetary fields to Decimal for precise validation
+        df = self._convert_to_decimal(df, data_type)
 
         try:
             config.schema_class.validate(df, lazy=True)

@@ -390,15 +390,11 @@ flowchart LR
 @dataclass
 class ValidationResult:
     is_valid: bool
-    valid_rows: pl.DataFrame
-    invalid_rows: pl.DataFrame
-    errors: list[ValidationError]
-    total_rows: int
-    valid_count: int
-    invalid_count: int
+    data: pl.DataFrame
+    error_message: str | None
 
 class ValidatorService:
-    def __init__(self, tolerance: float = 0.01): ...
+    def __init__(self, s3_config: DictConfig | None = None): ...
     def validate_assets(self, df: pl.DataFrame) -> ValidationResult: ...
     def validate_trades(self, df: pl.DataFrame, valid_account_ids: set[str] | None = None) -> ValidationResult: ...
 ```
@@ -408,13 +404,13 @@ class ValidatorService:
   - account_id 必填且唯一
   - account_type ∈ {1, 2, 3, 5, 6, 7, 11}
   - cash, frozen_cash, market_value, total_asset >= 0
-  - total_asset = cash + frozen_cash + market_value (±0.01)
+  - total_asset = cash + frozen_cash + market_value
 - **Trade**:
   - 所有字符串字段必填
   - traded_price, traded_volume, traded_amount > 0
   - direction ∈ {0, 48, 49}
   - offset_flag ∈ {48, 49, 50, 51, 52, 53, 54}
-  - traded_amount = traded_price × traded_volume (±0.01)
+  - traded_amount = traded_price × traded_volume
 
 #### 3.3.2 ExtractorService (提取器)
 
@@ -718,13 +714,6 @@ class Trade(SQLModel, table=True):
 
 #### 3.4.4 Pandera Schema (验证模式)
 
-**常量定义 (`domain/schemas.py`):**
-
-```python
-# 浮点数验证容差
-DEFAULT_TOLERANCE = 0.01
-```
-
 **AssetSchema 实现:**
 
 ```python
@@ -745,11 +734,9 @@ class AssetSchema(pa.DataFrameModel):
     @pa.dataframe_check
     @classmethod
     def total_asset_equals_sum(cls, data: PolarsData) -> pl.LazyFrame:
-        """验证 total_asset = cash + frozen_cash + market_value (±0.01)"""
+        """验证 total_asset = cash + frozen_cash + market_value（转换为 Decimal(20,2) 后精确比较）"""
         return data.lazyframe.select(
-            (pl.col("total_asset") - (pl.col("cash") + pl.col("frozen_cash") + pl.col("market_value")))
-            .abs()
-            .le(DEFAULT_TOLERANCE)
+            pl.col("total_asset") == (pl.col("cash") + pl.col("frozen_cash") + pl.col("market_value"))
         )
 ```
 
@@ -780,11 +767,9 @@ class TradeSchema(pa.DataFrameModel):
     @pa.dataframe_check
     @classmethod
     def traded_amount_equals_product(cls, data: PolarsData) -> pl.LazyFrame:
-        """验证 traded_amount = traded_price × traded_volume (±0.01)"""
+        """验证 traded_amount = traded_price × traded_volume（转换为 Decimal(20,2) 后精确比较）"""
         return data.lazyframe.select(
-            (pl.col("traded_amount") - (pl.col("traded_price") * pl.col("traded_volume")))
-            .abs()
-            .le(DEFAULT_TOLERANCE)
+            pl.col("traded_amount") == (pl.col("traded_price") * pl.col("traded_volume"))
         )
 ```
 
@@ -799,12 +784,12 @@ class TradeSchema(pa.DataFrameModel):
 
 **验证流程:**
 ```
-DataFrame → Pandera Schema → 字段级验证 → @pa.dataframe_check → 有效/无效行分离
-                              ↓
-                         ValidationResult {
-                           valid_rows: DataFrame,
-                           invalid_rows: DataFrame,
-                           errors: List[ValidationError]
+DataFrame → Decimal转换 → Pandera Schema → 字段级验证 → @pa.dataframe_check → 验证结果
+              ↓                                            ↓
+       金额字段转为                                   ValidationResult {
+       Decimal(20,2)                                   is_valid: bool,
+                           data: DataFrame,
+                           error_message: str | None
                          }
 ```
 
@@ -869,8 +854,6 @@ trades_file: trades.csv
 **ETL配置 (etl/default.yaml):**
 ```yaml
 batch_size: 10000
-validation:
-  tolerance: 0.01
 ```
 
 **Extractor配置 (extractor/default.yaml):**
@@ -1057,26 +1040,14 @@ Polars DataFrame (N rows)
 | 错误类型 | 处理策略 | 示例 |
 |----------|----------|------|
 | 连接错误 | 抛出异常，Pipeline 终止 | S3 连接失败、DB 连接失败 |
-| 验证错误 | 记录到 ValidationResult.errors，继续处理有效行 | 字段类型错误、业务规则违反 |
+| 验证错误 | 返回 ValidationResult.is_valid=False，流程终止 | 字段类型错误、业务规则违反 |
 | 加载错误 | 返回 LoadResult.success=False | 数据库写入失败 |
 
-### 5.2 ValidationError 结构
+### 5.2 验证结果处理
 
-```python
-@dataclass
-class ValidationError:
-    row_index: int      # 错误行索引
-    field: str          # 错误字段名
-    message: str        # 错误描述
-    value: str | None   # 错误值
-```
-
-### 5.3 验证结果处理
-
-- 有效行和无效行分离: `valid_rows` / `invalid_rows`
-- 统计信息: `total_rows`, `valid_count`, `invalid_count`
-- 只有有效行会被加载到数据库
-- 只有有效行会参与统计分析
+- 验证失败时流程终止，不继续后续处理
+- 错误信息通过 `error_message` 返回
+- 只有验证通过的数据会被加载到数据库
 
 ## 6. 性能优化设计
 

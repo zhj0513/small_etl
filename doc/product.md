@@ -45,8 +45,8 @@ flowchart LR
 - 使用polars读取s3上csv文件，使用Pandera验证来源csv文件是否合法。合法，传到数据提取层。如果不合法，则不再继续后续流程
 - **字段级验证**：所有字段没有空值
 - **业务规则验证**：
-  - Asset: `total_asset = cash + frozen_cash + market_value (±0.01)`
-  - Trade: `traded_amount = traded_price × traded_volume (±0.01)`
+  - Asset: `total_asset = cash + frozen_cash + market_value`
+  - Trade: `traded_amount = traded_price × traded_volume`
 
 ### 2. 数据提取
 - 使用duckdb读取数据验证后的Polars DataFrame数据
@@ -127,13 +127,9 @@ class DataTypeResult:
 ```python
 @dataclass
 class ValidationResult:
-    is_valid: bool              # 是否全部有效
-    valid_rows: pl.DataFrame    # 有效数据
-    invalid_rows: pl.DataFrame  # 无效数据
-    errors: list[ValidationError]  # 错误详情
-    total_rows: int             # 总行数
-    valid_count: int            # 有效行数
-    invalid_count: int          # 无效行数
+    is_valid: bool              # 是否验证通过
+    data: pl.DataFrame          # 有效数据（验证失败时为空）
+    error_message: str | None   # 错误信息
 ```
 
 ### 统计信息示例

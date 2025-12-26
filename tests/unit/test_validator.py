@@ -15,7 +15,7 @@ class TestValidatorService:
     @pytest.fixture
     def validator(self) -> ValidatorService:
         """Create validator instance."""
-        return ValidatorService(tolerance=0.01)
+        return ValidatorService()
 
     def test_validate_valid_assets(self, validator: ValidatorService, sample_asset_data: pl.DataFrame) -> None:
         """Test validation of valid asset data."""
@@ -53,8 +53,8 @@ class TestValidatorService:
         assert result.is_valid is False
         assert result.error_message is not None
 
-    def test_validate_asset_within_tolerance(self, validator: ValidatorService) -> None:
-        """Test validation allows total_asset within tolerance."""
+    def test_validate_asset_exact_match(self, validator: ValidatorService) -> None:
+        """Test validation requires exact match for total_asset."""
         df = pl.DataFrame(
             {
                 "id": [1],
@@ -63,7 +63,7 @@ class TestValidatorService:
                 "cash": [100000.00],
                 "frozen_cash": [5000.00],
                 "market_value": [200000.00],
-                "total_asset": [305000.005],  # Within 0.01 tolerance
+                "total_asset": [305000.00],  # Exact match
                 "updated_at": [datetime(2025, 12, 22, 14, 30, 0)],
             }
         )

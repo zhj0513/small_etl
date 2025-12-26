@@ -96,8 +96,8 @@ Two tables: `asset` and `trade` (Trade.account_id → Asset.account_id FK)
 **Trade fields**: `account_id`, `account_type`, `traded_id`, `stock_code`, `traded_time`, `traded_price`, `traded_volume`, `traded_amount`, `strategy_name`, `order_remark`, `direction`, `offset_flag`, `created_at`, `updated_at`
 
 Validation rules:
-- `total_asset = cash + frozen_cash + market_value` (±0.01 tolerance)
-- `traded_amount = traded_price * traded_volume` (±0.01 tolerance)
+- `total_asset = cash + frozen_cash + market_value`
+- `traded_amount = traded_price * traded_volume`
 - Enum fields: `account_type` (1,2,3,5,6,7,11), `offset_flag` (48-54), `direction` (0,48,49)
 
 ### Configuration

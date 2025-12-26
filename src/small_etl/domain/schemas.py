@@ -6,9 +6,6 @@ from pandera.polars import PolarsData
 
 from small_etl.domain.enums import VALID_ACCOUNT_TYPES, VALID_DIRECTIONS, VALID_OFFSET_FLAGS
 
-# Default tolerance for calculated field comparisons
-DEFAULT_TOLERANCE = 0.01
-
 
 class AssetSchema(pa.DataFrameModel):
     """Pandera schema for Asset data validation.
@@ -18,7 +15,7 @@ class AssetSchema(pa.DataFrameModel):
         - Numeric fields >= 0
         - Account type in valid enum range
         - Timestamp format
-        - total_asset = cash + frozen_cash + market_value (within tolerance)
+        - total_asset = cash + frozen_cash + market_value
     """
 
     account_id: str = pa.Field(str_length={"min_value": 1, "max_value": 20})
@@ -38,7 +35,9 @@ class AssetSchema(pa.DataFrameModel):
     @pa.dataframe_check  # type: ignore[misc]
     @classmethod
     def total_asset_equals_sum(cls, data: PolarsData) -> pl.LazyFrame:
-        """Check that total_asset = cash + frozen_cash + market_value (within tolerance).
+        """Check that total_asset = cash + frozen_cash + market_value.
+
+        Uses Decimal type for precise comparison (converted in ValidatorService).
 
         Args:
             data: PolarsData containing the LazyFrame to validate.
@@ -47,9 +46,7 @@ class AssetSchema(pa.DataFrameModel):
             LazyFrame with boolean column indicating which rows pass validation.
         """
         return data.lazyframe.select(
-            (pl.col("total_asset") - (pl.col("cash") + pl.col("frozen_cash") + pl.col("market_value")))
-            .abs()
-            .le(DEFAULT_TOLERANCE)
+            pl.col("total_asset") == (pl.col("cash") + pl.col("frozen_cash") + pl.col("market_value"))
         )
 
 
@@ -62,7 +59,7 @@ class TradeSchema(pa.DataFrameModel):
         - Volume > 0
         - Enum fields in valid ranges
         - Timestamp format
-        - traded_amount = traded_price * traded_volume (within tolerance)
+        - traded_amount = traded_price * traded_volume
     """
 
     account_id: str = pa.Field(str_length={"min_value": 1, "max_value": 20})
@@ -89,7 +86,9 @@ class TradeSchema(pa.DataFrameModel):
     @pa.dataframe_check  # type: ignore[misc]
     @classmethod
     def traded_amount_equals_product(cls, data: PolarsData) -> pl.LazyFrame:
-        """Check that traded_amount = traded_price * traded_volume (within tolerance).
+        """Check that traded_amount = traded_price * traded_volume.
+
+        Uses Decimal type for precise comparison (converted in ValidatorService).
 
         Args:
             data: PolarsData containing the LazyFrame to validate.
@@ -98,7 +97,5 @@ class TradeSchema(pa.DataFrameModel):
             LazyFrame with boolean column indicating which rows pass validation.
         """
         return data.lazyframe.select(
-            (pl.col("traded_amount") - (pl.col("traded_price") * pl.col("traded_volume")))
-            .abs()
-            .le(DEFAULT_TOLERANCE)
+            pl.col("traded_amount") == (pl.col("traded_price") * pl.col("traded_volume"))
         )

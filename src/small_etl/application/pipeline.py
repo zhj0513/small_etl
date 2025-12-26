@@ -56,7 +56,6 @@ class ETLPipeline:
         self._repo = PostgresRepository(config.db.url, echo=echo)
 
         self._validator = ValidatorService(
-            tolerance=config.etl.validation.tolerance,
             s3_config=config.s3,
         )
         self._extractor = ExtractorService(config=getattr(config, "extractor", None))

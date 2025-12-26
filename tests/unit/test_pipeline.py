@@ -32,7 +32,6 @@ def mock_config():
             },
             "etl": {
                 "batch_size": 100,
-                "validation": {"tolerance": 0.01},
             },
         }
     )

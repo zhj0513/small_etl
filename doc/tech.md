@@ -23,9 +23,8 @@
   - 使用 `data.lazyframe.select()` 进行列式计算
 - **字段级验证**：所有字段没有空值
 - **业务规则验证**：
-  - Asset: `total_asset = cash + frozen_cash + market_value (±0.01)`
-  - Trade: `traded_amount = traded_price × traded_volume (±0.01)`
-- **验证容差**：`DEFAULT_TOLERANCE = 0.01`（处理浮点数精度问题）
+  - Asset: `total_asset = cash + frozen_cash + market_value`
+  - Trade: `traded_amount = traded_price × traded_volume`
 
 ### ExtractorService - 数据提取
 - **DuckDB 读取验证后的数据**：使用 DuckDB 读取验证后的 Polars DataFrame
@@ -65,11 +64,10 @@ S3 CSV → Polars 读取 → ValidatorService 验证 → (有效→DuckDB, 无�
 ### Pandera Schema 约束
 - 必须使用 `@pa.dataframe_check` 装饰器进行业务规则验证
 - 验证方法必须接收 `PolarsData` 参数，返回 `pl.LazyFrame`
-- 计算字段验证容差：`DEFAULT_TOLERANCE = 0.01`
 - **字段级验证**：所有字段没有空值
 - **业务规则验证**：
-  - Asset: `total_asset = cash + frozen_cash + market_value (±0.01)`
-  - Trade: `traded_amount = traded_price × traded_volume (±0.01)`
+  - Asset: `total_asset = cash + frozen_cash + market_value`
+  - Trade: `traded_amount = traded_price × traded_volume`
 - **外键验证**：Trade 的 `account_id` 必须存在于已加载的 Asset 表中
 
 ### 时间戳格式
@@ -88,7 +86,7 @@ configs/
 ├── s3/
 │   └── dev.yaml          # MinIO 配置
 ├── etl/
-│   └── default.yaml      # batch_size, validation.tolerance
+│   └── default.yaml      # batch_size
 ├── extractor/
 │   └── default.yaml      # CSV 列映射配置
 └── scheduler/
@@ -167,14 +165,13 @@ def invalid_asset_data() -> pl.DataFrame:
 
 ## 错误处理规范
 
-### ValidationError 结构
+### ValidationResult 结构
 ```python
 @dataclass
-class ValidationError:
-    row_index: int      # 错误行索引
-    field: str          # 错误字段名
-    message: str        # 错误描述
-    value: str | None   # 错误值
+class ValidationResult:
+    is_valid: bool              # 是否验证通过
+    data: pl.DataFrame          # 有效数据（验证失败时为空）
+    error_message: str | None   # 错误信息
 ```
 
 ### CLI 退出码
