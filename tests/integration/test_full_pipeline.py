@@ -128,23 +128,18 @@ class TestFullPipelineIntegration:
         assert result.error_message is None
 
         # Verify assets loaded
-        assert result.assets_validation is not None
-        assert result.assets_load is not None
-        assert result.assets_load.success is True
-        assert result.assets_load.loaded_count > 0
+        assert result.assets_loaded > 0
 
         # Verify trades loaded
-        assert result.trades_validation is not None
-        assert result.trades_load is not None
-        assert result.trades_load.success is True
+        assert result.trades_loaded > 0
 
         # Verify statistics computed
         assert result.assets_stats is not None
         assert result.trades_stats is not None
 
         # Verify data in database
-        assert clean_database.get_asset_count() > 0
-        assert clean_database.get_trade_count() > 0
+        assert clean_database.get_count("asset") > 0
+        assert clean_database.get_count("trade") > 0
 
     def test_assets_only_pipeline(
         self, integration_config, clean_database: PostgresRepository
@@ -154,12 +149,11 @@ class TestFullPipelineIntegration:
             result = pipeline.run_assets_only()
 
         assert result.success is True, f"Pipeline failed: {result.error_message}"
-        assert result.assets_load is not None
-        assert result.assets_load.success is True
-        assert result.trades_load is None
+        assert result.assets_loaded > 0
+        assert result.trades_loaded == 0
 
         # Verify only assets in database
-        assert clean_database.get_asset_count() > 0
+        assert clean_database.get_count("asset") > 0
 
     def test_trades_only_pipeline_after_assets(
         self, integration_config, clean_database: PostgresRepository
@@ -175,8 +169,7 @@ class TestFullPipelineIntegration:
             trades_result = pipeline.run_trades_only()
 
         assert trades_result.success is True, f"Pipeline failed: {trades_result.error_message}"
-        assert trades_result.trades_load is not None
-        assert trades_result.trades_load.success is True
+        assert trades_result.trades_loaded > 0
 
     def test_trades_only_fails_without_assets(
         self, integration_config, clean_database: PostgresRepository
@@ -187,7 +180,7 @@ class TestFullPipelineIntegration:
 
         assert result.success is False
         assert result.error_message is not None
-        assert "No accounts found" in result.error_message
+        assert "No foreign keys found" in result.error_message
 
     def test_pipeline_idempotency(
         self, integration_config, clean_database: PostgresRepository
@@ -197,13 +190,13 @@ class TestFullPipelineIntegration:
         with ETLPipeline(integration_config) as pipeline:
             result1 = pipeline.run()
         assert result1.success is True
-        count_after_first = clean_database.get_asset_count()
+        count_after_first = clean_database.get_count("asset")
 
         # Second run (should upsert, not duplicate)
         with ETLPipeline(integration_config) as pipeline:
             result2 = pipeline.run()
         assert result2.success is True
-        count_after_second = clean_database.get_asset_count()
+        count_after_second = clean_database.get_count("asset")
 
         # Should have same count (upsert, not insert)
         assert count_after_first == count_after_second

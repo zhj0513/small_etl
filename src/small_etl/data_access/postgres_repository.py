@@ -43,6 +43,19 @@ class PostgresRepository:
             session.commit()
             logger.info("Truncated asset and trade tables")
 
+    def get_count(self, table_name: str) -> int:
+        """Get the count of rows in a table.
+
+        Args:
+            table_name: Name of the table to count.
+
+        Returns:
+            Number of rows in the table.
+        """
+        with Session(self._engine) as session:
+            result = session.execute(text(f"SELECT COUNT(*) FROM {table_name}"))  # pyrefly: ignore[deprecated]
+            return result.scalar() or 0
+
     def close(self) -> None:
         """Dispose of the database engine."""
         self._engine.dispose()
