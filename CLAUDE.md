@@ -60,7 +60,7 @@ This is a batch ETL system for syncing S3 CSV files to PostgreSQL with DuckDB-ba
 src/small_etl/
 ├── domain/          # Data models (SQLModel), enums, Pandera schemas, DataTypeRegistry
 ├── data_access/     # DuckDBClient, PostgresRepository
-├── services/        # ExtractorService, ValidatorService, LoaderService, AnalyticsService
+├── services/        # ValidatorService, ExtractorService, LoaderService, AnalyticsService
 ├── config/          # Configuration utilities
 └── application/     # ETLPipeline orchestration
 ```
@@ -69,23 +69,25 @@ src/small_etl/
 
 ```mermaid
 flowchart LR
-    S3[S3 CSV] --> DuckDB[DuckDB]
-    DuckDB --> Extractor
-    Extractor --> Validator
-    Validator --> Loader
-    Loader --> PostgreSQL
-    PostgreSQL --> Analytics
+    S3[S3 CSV] --> Polars[Polars]
+    Polars --> Validator[ValidatorService]
+    Validator --> Extractor[ExtractorService]
+    Extractor --> Loader[LoaderService]
+    Loader --> DuckDB[DuckDB]
+    DuckDB --> PostgreSQL
+    PostgreSQL --> Analytics[AnalyticsService]
 ```
 
 ### Key Components
 
-- **ETLPipeline** (`application/pipeline.py`): Main orchestrator, use `with ETLPipeline(config) as pipeline`
-- **ExtractorService** (`services/extractor.py`): Uses DuckDB to read CSV directly from S3, returns Polars DataFrame
-- **ValidatorService** (`services/validator.py`): Field-level + business rule validation with Pandera schemas
-- **LoaderService** (`services/loader.py`): Batch loads validated data to PostgreSQL
-- **AnalyticsService** (`services/analytics.py`): Provides statistics and analysis
+- **ETLPipeline** (`application/pipeline.py`): Main orchestrator, use `with ETLPipeline(config) as pipeline`. Configuration-driven via `pipeline/default.yaml`
+- **ValidatorService** (`services/validator.py`): Uses Polars to read CSV from S3, validates with Pandera schemas
+- **ExtractorService** (`services/extractor.py`): Transforms validated data with type conversions based on Hydra config
+- **LoaderService** (`services/loader.py`): Batch loads data to PostgreSQL using DuckDB postgres extension
+- **AnalyticsService** (`services/analytics.py`): Queries statistics from PostgreSQL via DuckDB
 - **PostgresRepository** (`data_access/postgres_repository.py`): Database operations (queries, truncate)
-- **DuckDBClient** (`data_access/duckdb_client.py`): In-memory data operations, S3 access via httpfs, PostgreSQL attachment
+- **DuckDBClient** (`data_access/duckdb_client.py`): In-memory operations, PostgreSQL attachment, upsert operations
+- **DataTypeRegistry** (`domain/registry.py`): Centralized registry for data type configurations
 
 ### Data Models
 
@@ -105,9 +107,10 @@ Validation rules:
 Hydra configs in `configs/`:
 - `config.yaml`: Main config entry point
 - `db/dev.yaml`, `db/test.yaml`: Database connection (supports env vars: `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`)
-- `s3/dev.yaml`: MinIO/S3 connection (used by DuckDB httpfs)
-- `etl/default.yaml`: batch_size, validation tolerance
+- `s3/dev.yaml`: MinIO/S3 connection (used by Polars storage_options)
+- `etl/default.yaml`: batch_size
 - `extractor/default.yaml`: CSV column mappings and data type conversions
+- `pipeline/default.yaml`: Pipeline steps configuration (data types to process in order)
 
 Default test database: `postgresql://etl:etlpass@localhost:15432/etl_test_db`
 

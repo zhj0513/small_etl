@@ -20,20 +20,20 @@ flowchart LR
     S3[S3 / MinIO<br/>CSV 文件]
     Polars[Polars<br/>读取 CSV]
     Validate[ValidatorService<br/>数据验证]
-    DuckDB[DuckDB]
-    Extract[ExtractorService<br/>字段提取与类型转换]
-    Load[LoadService<br/>数据入库]
+    Transform[ExtractorService<br/>类型转换]
+    Load[LoaderService<br/>数据入库]
+    DuckDB[DuckDB<br/>PostgreSQL插件]
     PG[PostgreSQL]
     Analytics[AnalyticsService<br/>统计分析]
     Log[错误日志<br/>流程终止]
 
     S3 --> Polars
     Polars --> Validate
-    Validate -->|CSV 有效| DuckDB
+    Validate -->|CSV 有效| Transform
     Validate -->|CSV 无效| Log
-    DuckDB --> Extract
-    Extract --> Load
-    Load --> PG
+    Transform --> Load
+    Load --> DuckDB
+    DuckDB --> PG
     PG --> Analytics
 ```
 
@@ -48,12 +48,13 @@ flowchart LR
   - Asset: `total_asset = cash + frozen_cash + market_value`
   - Trade: `traded_amount = traded_price × traded_volume`
 
-### 2. 数据提取
-- 使用duckdb读取数据验证后的Polars DataFrame数据
+### 2. 数据提取（类型转换）
+- ExtractorService 根据 Hydra 配置进行类型转换
 - 支持 Hydra 配置驱动的列映射和类型转换（`configs/extractor/default.yaml`）
 
 ### 3. 数据入库
-- 使用 DuckDB PostgreSQL 插件进行插入
+- 使用 DuckDB PostgreSQL 插件进行批量 UPSERT
+- UPDATE + INSERT 分离策略处理外键约束
 
 ### 4. 数据分析
 - 用 DuckDB 直接查询 PostgreSQL 中的已入库数据
@@ -108,19 +109,21 @@ pixi run python -m small_etl command=schedule job.action=remove job.id=daily_etl
 
 ```python
 @dataclass
-class PipelineResult:
-    success: bool                           # 是否成功
-    started_at: datetime                    # 开始时间
-    completed_at: datetime                  # 完成时间
-    results: dict[str, DataTypeResult]      # 各数据类型的处理结果
-    error_message: str | None               # 错误信息
+class StepResult:
+    """单步处理结果"""
+    data_type: str              # 数据类型名称 (如 "asset", "trade")
+    success: bool               # 是否成功
+    loaded_count: int           # 加载记录数
+    error_message: str | None   # 错误信息
+    statistics: Any             # 统计信息
 
 @dataclass
-class DataTypeResult:
-    data_type: str                          # 数据类型名称 (如 "asset", "trade")
-    validation: ValidationResult | None     # 验证结果
-    load: LoadResult | None                 # 加载结果
-    statistics: Any                         # 统计信息
+class PipelineResult:
+    success: bool                       # 是否成功
+    started_at: datetime                # 开始时间
+    completed_at: datetime              # 完成时间
+    step_results: list[StepResult]      # 各步骤的处理结果
+    error_message: str | None           # 错误信息
 ```
 
 ### ValidationResult 结构

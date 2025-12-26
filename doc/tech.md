@@ -17,19 +17,17 @@
 ## 数据管道
 
 ### ValidatorService - 数据验证
-- **Polars 读取 S3 CSV**：使用 Polars 读取 S3 上的 CSV 文件
+- **Polars 读取 S3 CSV**：使用 Polars 的 `storage_options` 读取 S3 上的 CSV 文件
+- **类型转换**：在验证前将金额字段转换为 Decimal(20,2) 确保精度
 - **Pandera Schema 验证**：使用 `@pa.dataframe_check` 装饰器
   - 接收 `PolarsData` 参数，返回 `pl.LazyFrame`
   - 使用 `data.lazyframe.select()` 进行列式计算
-- **字段级验证**：所有字段没有空值
-- **业务规则验证**：
-  - Asset: `total_asset = cash + frozen_cash + market_value`
-  - Trade: `traded_amount = traded_price × traded_volume`
+- **外键验证**：检查 Trade 的 account_id 是否存在于 Asset 表中
 
-### ExtractorService - 数据提取
-- **DuckDB 读取验证后的数据**：使用 DuckDB 读取验证后的 Polars DataFrame
-- **配置驱动转换**：使用 `configs/extractor/default.yaml` 定义列映射，根据 Hydra 配置进行类型转换
-- **智能类型检查**：转换前检查列类型，如果已是目标类型则跳过转换（避免 Datetime 重复解析等问题）
+### ExtractorService - 类型转换
+- **配置驱动转换**：使用 `configs/extractor/default.yaml` 定义列映射
+- **智能类型检查**：转换前检查列类型，如果已是目标类型则跳过转换
+- **transform() 方法**：将验证后的 DataFrame 按配置进行类型转换
 
 ### LoaderService - 数据写入
 - 使用 DuckDB 的 PostgreSQL 插件进行批量 UPSERT
@@ -50,7 +48,7 @@ Assets 必须先于 Trades 处理（外键约束：Trade.account_id → Asset.ac
 
 **完整数据流：**
 ```
-S3 CSV → Polars 读取 → ValidatorService 验证 → (有效→DuckDB, 无效→日志) → ExtractorService 提取 → LoadService 入库 → PostgreSQL → AnalyticsService 分析
+S3 CSV → Polars 读取 → ValidatorService 验证 → (有效→ExtractorService, 无效→日志) → 类型转换 → LoaderService 入库 → DuckDB PostgreSQL插件 → PostgreSQL → AnalyticsService 分析
 ```
 
 ## 必须遵守的约束
@@ -89,8 +87,22 @@ configs/
 │   └── default.yaml      # batch_size
 ├── extractor/
 │   └── default.yaml      # CSV 列映射配置
+├── pipeline/
+│   └── default.yaml      # Pipeline 步骤配置
 └── scheduler/
     └── default.yaml      # 定时任务配置
+```
+
+### pipeline 配置格式
+```yaml
+# Pipeline 处理步骤 - 按顺序执行
+steps:
+  - data_type: asset      # 引用 DataTypeRegistry 中注册的数据类型
+    enabled: true
+  - data_type: trade
+    enabled: true
+
+compute_analytics: true   # 是否计算统计分析
 ```
 
 ### extractor 配置格式
