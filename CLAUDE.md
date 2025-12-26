@@ -113,29 +113,39 @@ Default test database: `postgresql://etl:etlpass@localhost:15432/etl_test_db`
 
 ### CLI Commands
 
-CLI uses argparse with Hydra config overrides (key=value syntax).
+CLI uses pure Hydra configuration (no argparse). All parameters via Hydra overrides.
 
-**Available commands:**
-- `run` - Run complete ETL pipeline (assets + trades)
-- `clean` - Truncate asset and trade tables
-- `schedule` - Manage scheduled tasks (start/add/list/remove/pause/resume)
+**Available commands (via `command=` override):**
+- `command=run` - Run complete ETL pipeline (default)
+- `command=clean` - Truncate asset and trade tables
+- `command=schedule` - Manage scheduled tasks
 
 **Examples:**
 ```bash
-# Run ETL
-pixi run python -m small_etl run
-pixi run python -m small_etl run db=test
-pixi run python -m small_etl run db.host=192.168.1.100 etl.batch_size=5000
+# Run ETL (default command)
+pixi run python -m small_etl
+pixi run python -m small_etl db=test
+pixi run python -m small_etl db.host=192.168.1.100 etl.batch_size=5000
 
 # Clean tables
-pixi run python -m small_etl clean
-pixi run python -m small_etl clean db=test
+pixi run python -m small_etl command=clean
+pixi run python -m small_etl command=clean db=test
 
 # Schedule commands
-pixi run python -m small_etl schedule start
-pixi run python -m small_etl schedule add --job-id daily_etl --etl-command run --interval day --at 02:00
-pixi run python -m small_etl schedule list
+pixi run python -m small_etl command=schedule job.action=start
+pixi run python -m small_etl command=schedule job.action=add job.id=daily_etl job.interval=day job.at=02:00
+pixi run python -m small_etl command=schedule job.action=list
+pixi run python -m small_etl command=schedule job.action=remove job.id=daily_etl
+pixi run python -m small_etl command=schedule job.action=pause job.id=daily_etl
+pixi run python -m small_etl command=schedule job.action=resume job.id=daily_etl
 ```
+
+**Schedule job parameters:**
+- `job.action` - Action: start/add/list/remove/pause/resume
+- `job.id` - Job identifier (required for add/remove/pause/resume)
+- `job.command` - ETL command: run (default)
+- `job.interval` - Interval: day/hour/minute
+- `job.at` - Execution time for day interval (e.g., "02:00")
 
 **Hydra override syntax:**
 - `key=value` - Override a config value

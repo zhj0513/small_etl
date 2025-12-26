@@ -60,8 +60,8 @@ flowchart LR
 - 聚合统计：账户资产均值、账户资产总量
 
 ### 5. 命令行界面
-- 支持 run/clean/schedule 命令
-- 使用 Hydra 配置覆盖：`db=test`、`etl.batch_size=5000` 等
+- 支持 run/clean/schedule 命令（通过 `command=` 配置）
+- 使用纯 Hydra 配置：`db=test`、`etl.batch_size=5000`、`job.action=add` 等
 
 ### 6. 定时任务管理
 - APScheduler 支持周期性 ETL 执行
@@ -83,22 +83,23 @@ flowchart LR
 ## CLI 命令示例
 
 ```bash
-# 完整 ETL 流程
-pixi run python -m small_etl run
+# 完整 ETL 流程（默认命令）
+pixi run python -m small_etl
 
 # 使用测试环境
-pixi run python -m small_etl run db=test
+pixi run python -m small_etl db=test
 
 # 覆盖多个配置
-pixi run python -m small_etl run db.host=192.168.1.100 etl.batch_size=5000
+pixi run python -m small_etl db.host=192.168.1.100 etl.batch_size=5000
 
 # 清空数据表
-pixi run python -m small_etl clean
+pixi run python -m small_etl command=clean
 
 # 定时任务管理
-pixi run python -m small_etl schedule start
-pixi run python -m small_etl schedule add --job-id daily_etl --etl-command run --interval day --at "02:00"
-pixi run python -m small_etl schedule list
+pixi run python -m small_etl command=schedule job.action=start
+pixi run python -m small_etl command=schedule job.action=add job.id=daily_etl job.command=run job.interval=day job.at=02:00
+pixi run python -m small_etl command=schedule job.action=list
+pixi run python -m small_etl command=schedule job.action=remove job.id=daily_etl
 ```
 
 ## 输出结果说明

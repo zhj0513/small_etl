@@ -9,7 +9,7 @@
 - Schema 管理：Alembic
 - 配置管理：Hydra
 - 包管理：pixi
-- CLI：argparse（标准库命令行解析）
+- CLI：Hydra（纯配置驱动，无 argparse）
 - 任务调度：APScheduler（定时任务管理，PostgreSQL 持久化）
 - 静态检查：pyright, pyrefly, ruff
 - 测试框架：pytest
@@ -179,20 +179,28 @@ class ValidationResult:
 |--------|------|
 | 0 | 成功 |
 | 1 | 一般错误 |
-| 2 | 参数错误 |
 
 ### CLI 命令
-CLI 使用 argparse 解析命令，支持 Hydra 配置覆盖（key=value 语法）。
+CLI 使用纯 Hydra 配置（无 argparse），所有参数通过 Hydra 覆盖语法传递。
 
-**支持的命令:**
-- `run` - 运行完整 ETL 流程（assets + trades）
-- `clean` - 清空数据表
-- `schedule` - 定时任务管理（start/add/list/remove/pause/resume）
+**支持的命令（通过 `command=` 配置）:**
+- `command=run` - 运行完整 ETL 流程（默认）
+- `command=clean` - 清空数据表
+- `command=schedule` - 定时任务管理
+
+**Schedule 参数（通过 `job.*` 配置）:**
+- `job.action` - 操作: start/add/list/remove/pause/resume
+- `job.id` - 任务 ID
+- `job.command` - ETL 命令: run
+- `job.interval` - 间隔: day/hour/minute
+- `job.at` - 执行时间 (仅 day 有效)
 
 **Hydra 配置覆盖示例:**
 ```bash
-pixi run python -m small_etl run db=test
-pixi run python -m small_etl run db.host=192.168.1.100 etl.batch_size=5000
+pixi run python -m small_etl db=test
+pixi run python -m small_etl db.host=192.168.1.100 etl.batch_size=5000
+pixi run python -m small_etl command=clean
+pixi run python -m small_etl command=schedule job.action=add job.id=daily_etl job.interval=day job.at=02:00
 ```
 
 ## 文档规范

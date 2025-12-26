@@ -74,6 +74,14 @@ class ExtractorService:
                     expr = pl.col(csv_name).alias(target_name)
                 else:
                     expr = pl.col(csv_name).cast(pl.Int64).alias(target_name)
+            elif dtype == "Decimal":
+                precision = getattr(col_cfg, "precision", 20)
+                scale = getattr(col_cfg, "scale", 2)
+                target_dtype = pl.Decimal(precision, scale)
+                if col_dtype == target_dtype:
+                    expr = pl.col(csv_name).alias(target_name)
+                else:
+                    expr = pl.col(csv_name).cast(target_dtype).alias(target_name)
             else:
                 expr = pl.col(csv_name).alias(target_name)
 

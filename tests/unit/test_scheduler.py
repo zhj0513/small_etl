@@ -333,12 +333,14 @@ class TestExecuteETLJob:
 
 
 class TestSchedulerCLI:
-    """Tests for scheduler CLI commands."""
+    """Tests for scheduler CLI commands using Hydra config."""
 
     @pytest.fixture
-    def config(self):
-        """Provide a minimal config for scheduler."""
-        return {
+    def mock_config(self):
+        """Provide a mock Hydra DictConfig for scheduler tests."""
+        from omegaconf import OmegaConf
+
+        return OmegaConf.create({
             "scheduler": {
                 "enabled": True,
                 "check_interval": 1,
@@ -355,161 +357,113 @@ class TestSchedulerCLI:
             "etl": {
                 "batch_size": 1000,
             },
-        }
+            "job": {
+                "id": "",
+                "command": "run",
+                "interval": "day",
+                "at": "",
+                "action": "start",
+            },
+        })
 
-    def test_run_schedule_add(self, config, capsys):
+    def test_run_schedule_add(self, mock_config, capsys):
         """Test schedule add command."""
-        import argparse
-        import logging
         import uuid
 
         from small_etl.cli import EXIT_SUCCESS, run_schedule
 
-        # Use unique job ID to avoid conflicts with persistent storage
         unique_job_id = f"test_job_{uuid.uuid4().hex[:8]}"
+        mock_config.job.action = "add"
+        mock_config.job.id = unique_job_id
+        mock_config.job.command = "run"
+        mock_config.job.interval = "day"
+        mock_config.job.at = "02:00"
 
-        args = argparse.Namespace(
-            schedule_command="add",
-            job_id=unique_job_id,
-            etl_command="run",
-            interval="day",
-            at="02:00",
-            env="dev",
-            verbose=False,
-        )
-        logger = logging.getLogger("test")
-
-        result = run_schedule(args, config, logger)
+        result = run_schedule(mock_config)
         assert result == EXIT_SUCCESS
 
         captured = capsys.readouterr()
         assert "Job added" in captured.out
         assert unique_job_id in captured.out
 
-    def test_run_schedule_list_empty(self, config, capsys):
+    def test_run_schedule_list_empty(self, mock_config, capsys):
         """Test schedule list command with no jobs."""
-        import argparse
-        import logging
-
         from small_etl.cli import EXIT_SUCCESS, run_schedule
         from small_etl.scheduler.scheduler import ETLScheduler
 
-        # Clear all existing jobs to ensure empty state
-        scheduler = ETLScheduler(config, blocking=False)
+        config_dict = {
+            "scheduler": mock_config.scheduler,
+            "db": {"url": mock_config.db.url},
+        }
+        scheduler = ETLScheduler(config_dict, blocking=False)
         for job in scheduler.list_jobs():
             scheduler.remove_job(job.job_id)
         scheduler.shutdown(wait=False)
 
-        args = argparse.Namespace(
-            schedule_command="list",
-            env="dev",
-            verbose=False,
-        )
-        logger = logging.getLogger("test")
+        mock_config.job.action = "list"
 
-        result = run_schedule(args, config, logger)
+        result = run_schedule(mock_config)
         assert result == EXIT_SUCCESS
 
         captured = capsys.readouterr()
         assert "Scheduled Jobs (0)" in captured.out
 
-    def test_run_schedule_remove_not_found(self, config, capsys):
+    def test_run_schedule_remove_not_found(self, mock_config, capsys):
         """Test schedule remove command for non-existent job."""
-        import argparse
-        import logging
-
         from small_etl.cli import EXIT_ERROR, run_schedule
 
-        args = argparse.Namespace(
-            schedule_command="remove",
-            job_id="nonexistent",
-            env="dev",
-            verbose=False,
-        )
-        logger = logging.getLogger("test")
+        mock_config.job.action = "remove"
+        mock_config.job.id = "nonexistent"
 
-        result = run_schedule(args, config, logger)
+        result = run_schedule(mock_config)
         assert result == EXIT_ERROR
 
         captured = capsys.readouterr()
         assert "not found" in captured.out
 
-    def test_run_schedule_no_subcommand(self, config, capsys):
-        """Test schedule command without subcommand."""
-        import argparse
-        import logging
+    def test_run_schedule_add_missing_id(self, mock_config, capsys):
+        """Test schedule add without job.id."""
+        from small_etl.cli import EXIT_ERROR, run_schedule
 
-        from small_etl.cli import EXIT_ARGS_ERROR, run_schedule
+        mock_config.job.action = "add"
+        mock_config.job.id = ""
 
-        args = argparse.Namespace(
-            schedule_command=None,
-            env="dev",
-            verbose=False,
-        )
-        logger = logging.getLogger("test")
+        result = run_schedule(mock_config)
+        assert result == EXIT_ERROR
 
-        result = run_schedule(args, config, logger)
-        assert result == EXIT_ARGS_ERROR
-
-    def test_run_schedule_add_invalid_command(self, config, capsys):
+    def test_run_schedule_add_invalid_command(self, mock_config):
         """Test schedule add with invalid ETL command."""
-        import argparse
-        import logging
-
-        from small_etl.cli import EXIT_ARGS_ERROR, run_schedule
-
-        # This should be caught by argparse, but testing direct call
-        args = argparse.Namespace(
-            schedule_command="add",
-            job_id="test_job_invalid",
-            etl_command="invalid",
-            interval="day",
-            at=None,
-            env="dev",
-            verbose=False,
-        )
-        logger = logging.getLogger("test")
-
-        result = run_schedule(args, config, logger)
-        assert result == EXIT_ARGS_ERROR
-
-    def test_run_schedule_pause(self, config, capsys):
-        """Test schedule pause command."""
-        import argparse
-        import logging
-
         from small_etl.cli import EXIT_ERROR, run_schedule
 
-        args = argparse.Namespace(
-            schedule_command="pause",
-            job_id="nonexistent",
-            env="dev",
-            verbose=False,
-        )
-        logger = logging.getLogger("test")
+        mock_config.job.action = "add"
+        mock_config.job.id = "test_job_invalid"
+        mock_config.job.command = "invalid"
+        mock_config.job.interval = "day"
 
-        result = run_schedule(args, config, logger)
+        result = run_schedule(mock_config)
+        assert result == EXIT_ERROR
+
+    def test_run_schedule_pause(self, mock_config, capsys):
+        """Test schedule pause command."""
+        from small_etl.cli import EXIT_ERROR, run_schedule
+
+        mock_config.job.action = "pause"
+        mock_config.job.id = "nonexistent"
+
+        result = run_schedule(mock_config)
         assert result == EXIT_ERROR
 
         captured = capsys.readouterr()
         assert "not found" in captured.out
 
-    def test_run_schedule_resume(self, config, capsys):
+    def test_run_schedule_resume(self, mock_config, capsys):
         """Test schedule resume command."""
-        import argparse
-        import logging
-
         from small_etl.cli import EXIT_ERROR, run_schedule
 
-        args = argparse.Namespace(
-            schedule_command="resume",
-            job_id="nonexistent",
-            env="dev",
-            verbose=False,
-        )
-        logger = logging.getLogger("test")
+        mock_config.job.action = "resume"
+        mock_config.job.id = "nonexistent"
 
-        result = run_schedule(args, config, logger)
+        result = run_schedule(mock_config)
         assert result == EXIT_ERROR
 
         captured = capsys.readouterr()

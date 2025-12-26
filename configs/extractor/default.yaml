@@ -17,19 +17,27 @@ assets:
       nullable: false
     - name: cash
       csv_name: cash
-      dtype: Float64
+      dtype: Decimal
+      precision: 20
+      scale: 2
       nullable: false
     - name: frozen_cash
       csv_name: frozen_cash
-      dtype: Float64
+      dtype: Decimal
+      precision: 20
+      scale: 2
       nullable: false
     - name: market_value
       csv_name: market_value
-      dtype: Float64
+      dtype: Decimal
+      precision: 20
+      scale: 2
       nullable: false
     - name: total_asset
       csv_name: total_asset
-      dtype: Float64
+      dtype: Decimal
+      precision: 20
+      scale: 2
       nullable: false
     - name: updated_at
       csv_name: updated_at
@@ -66,7 +74,9 @@ trades:
       nullable: false
     - name: traded_price
       csv_name: traded_price
-      dtype: Float64
+      dtype: Decimal
+      precision: 20
+      scale: 2
       nullable: false
     - name: traded_volume
       csv_name: traded_volume
@@ -74,7 +84,9 @@ trades:
       nullable: false
     - name: traded_amount
       csv_name: traded_amount
-      dtype: Float64
+      dtype: Decimal
+      precision: 20
+      scale: 2
       nullable: false
     - name: strategy_name
       csv_name: strategy_name

@@ -125,28 +125,48 @@ class ValidatorService:
 
         return "; ".join(errors)
 
-    def _convert_to_decimal(self, df: pl.DataFrame, data_type: str) -> pl.DataFrame:
-        """Convert monetary fields to Decimal(20, 2) type for precise validation.
+    def _convert_types(self, df: pl.DataFrame, data_type: str) -> pl.DataFrame:
+        """Convert columns to expected types for Pandera validation.
+
+        Since coerce=False, we must convert types before validation:
+        - Monetary fields to Decimal(20, 2) for precise arithmetic
+        - account_id to String
+        - Datetime fields from String to Datetime (if needed)
 
         Args:
-            df: DataFrame with float columns.
+            df: DataFrame with raw CSV types.
             data_type: Data type name (e.g., "asset", "trade").
 
         Returns:
-            DataFrame with monetary fields converted to Decimal.
+            DataFrame with properly typed columns.
         """
         if data_type == "asset":
-            return df.with_columns([
+            exprs = [
+                pl.col("account_id").cast(pl.Utf8),
                 pl.col("cash").cast(pl.Decimal(20, 2)),
                 pl.col("frozen_cash").cast(pl.Decimal(20, 2)),
                 pl.col("market_value").cast(pl.Decimal(20, 2)),
                 pl.col("total_asset").cast(pl.Decimal(20, 2)),
-            ])
+            ]
+            # Convert datetime only if it's a string
+            if df.schema.get("updated_at") == pl.Utf8:
+                exprs.append(pl.col("updated_at").str.to_datetime())
+            return df.with_columns(exprs)
         elif data_type == "trade":
-            return df.with_columns([
+            exprs = [
+                pl.col("account_id").cast(pl.Utf8),
+                pl.col("traded_id").cast(pl.Utf8),
+                pl.col("stock_code").cast(pl.Utf8),
+                pl.col("strategy_name").cast(pl.Utf8),
+                pl.col("order_remark").cast(pl.Utf8),
                 pl.col("traded_price").cast(pl.Decimal(20, 2)),
                 pl.col("traded_amount").cast(pl.Decimal(20, 2)),
-            ])
+            ]
+            # Convert datetime only if it's a string
+            for col in ["traded_time", "created_at", "updated_at"]:
+                if df.schema.get(col) == pl.Utf8:
+                    exprs.append(pl.col(col).str.to_datetime())
+            return df.with_columns(exprs)
         return df
 
     def validate(
@@ -175,8 +195,8 @@ class ValidatorService:
         if len(df) == 0:
             return ValidationResult(is_valid=True, data=df)
 
-        # Convert monetary fields to Decimal for precise validation
-        df = self._convert_to_decimal(df, data_type)
+        # Convert columns to expected types for Pandera validation
+        df = self._convert_types(df, data_type)
 
         try:
             config.schema_class.validate(df, lazy=True)

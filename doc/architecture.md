@@ -24,7 +24,7 @@ flowchart LR
 
 | 层级 | 技术选型 | 用途 |
 |------|----------|------|
-| CLI | argparse | 命令行参数解析 |
+| CLI | Hydra | 命令行配置与参数解析 |
 | 任务调度 | APScheduler | 定时任务管理（PostgreSQL持久化） |
 | 数据源 | MinIO/AWS S3 | CSV 文件存储 |
 | 数据处理 | DuckDB + Polars | 内存数据转换、列式处理 |
@@ -47,7 +47,7 @@ flowchart TB
     %% ======================
     %% CLI Layer
     %% ======================
-    CLI["CLI Layer<br/>(命令行层)<br/>- 参数解析 (argparse)<br/>- 命令分发<br/>- 结果输出"]
+    CLI["CLI Layer<br/>(命令行层)<br/>- Hydra 配置解析<br/>- 命令分发<br/>- 结果输出"]
 
     %% ======================
     %% Scheduler Layer
@@ -97,9 +97,9 @@ flowchart TB
 ### 2.2 各层职责
 
 #### CLI Layer (命令行层)
-- **参数解析**: 使用 argparse 解析命令行参数
-- **命令分发**: 根据子命令调用不同的 Pipeline 方法
-- **配置覆盖**: 支持通过命令行参数覆盖 Hydra 配置
+- **Hydra 配置解析**: 使用 `@hydra.main` 装饰器自动加载配置
+- **命令分发**: 根据 `command` 配置调用不同的 Pipeline 方法
+- **配置覆盖**: 支持通过 Hydra 语法覆盖配置（如 `db=test`、`etl.batch_size=5000`）
 - **结果输出**: 格式化输出执行结果和统计信息
 
 #### Scheduler Layer (调度层)
@@ -136,10 +136,10 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph CLI["CLI Entry Point"]
-        MAIN["main()"] --> PARSE["parse_args()"]
-        PARSE --> RUN["run"]
-        PARSE --> CLEAN["clean"]
-        PARSE --> SCHEDULE["schedule"]
+        MAIN["@hydra.main()"] --> CMD{command}
+        CMD -->|run| RUN["run_etl()"]
+        CMD -->|clean| CLEAN["run_clean()"]
+        CMD -->|schedule| SCHEDULE["run_schedule()"]
     end
 
     RUN --> Pipeline["ETLPipeline.run()"]
@@ -151,20 +151,22 @@ flowchart LR
 
 **入口模块:** `src/small_etl/cli.py`
 
-**支持的命令:**
+CLI 使用纯 Hydra 配置（无 argparse），所有参数通过 Hydra 覆盖语法传递。
+
+**支持的命令（通过 `command=` 配置）:**
 
 ```bash
-# 完整 ETL 流程
-pixi run python -m small_etl run
+# 完整 ETL 流程（默认）
+pixi run python -m small_etl
 
-# 清空数据表 (truncate asset 和 trade 表)
-pixi run python -m small_etl clean
+# 清空数据表
+pixi run python -m small_etl command=clean
 
 # 定时任务管理
-pixi run python -m small_etl schedule start|add|list|remove|pause|resume
+pixi run python -m small_etl command=schedule job.action=start|add|list|remove|pause|resume
 ```
 
-**Hydra 配置覆盖 (key=value 语法):**
+**Hydra 配置覆盖:**
 
 | 覆盖示例 | 说明 |
 |----------|------|
@@ -173,47 +175,50 @@ pixi run python -m small_etl schedule start|add|list|remove|pause|resume
 | `db.port=5432` | 覆盖数据库端口 |
 | `etl.batch_size=5000` | 覆盖批处理大小 |
 | `s3.bucket=my-bucket` | 覆盖 S3 bucket |
-| `s3.assets_file=data.csv` | 覆盖资产文件名 |
+| `command=clean` | 执行清理命令 |
+| `job.action=add` | Schedule 子命令 |
+| `job.id=daily_etl` | Schedule 任务 ID |
 
 #### 3.1.2 接口定义
 
 ```python
-def main() -> int:
+@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+def main(cfg: DictConfig) -> int:
     """CLI 入口函数，返回退出码"""
     ...
 
-def parse_args(args: list[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
-    """解析命令行参数，返回 (解析结果, Hydra覆盖列表)"""
-    ...
-
-def build_config(hydra_overrides: list[str]) -> dict[str, Any]:
-    """构建 Hydra 配置"""
-    ...
-
-def run_pipeline(args: argparse.Namespace, hydra_overrides: list[str]) -> int:
+def run_etl(cfg: DictConfig) -> int:
     """执行 ETL Pipeline"""
     ...
 
+def run_clean(cfg: DictConfig) -> int:
+    """清空数据表"""
+    ...
+
+def run_schedule(cfg: DictConfig) -> int:
+    """执行调度器命令"""
+    ...
+
 def print_result(result: PipelineResult) -> None:
-    """格式化输出执行结果（通用，支持任意数据类型）"""
+    """格式化输出执行结果"""
     ...
 ```
 
 #### 3.1.3 使用示例
 
 ```bash
-# 运行 ETL
-pixi run python -m small_etl run
+# 运行 ETL（默认命令）
+pixi run python -m small_etl
 
 # 使用测试环境配置
-pixi run python -m small_etl run db=test
+pixi run python -m small_etl db=test
 
 # 覆盖多个配置
-pixi run python -m small_etl run db.host=192.168.1.100 etl.batch_size=5000
+pixi run python -m small_etl db.host=192.168.1.100 etl.batch_size=5000
 
 # 清空数据表
-pixi run python -m small_etl clean
-pixi run python -m small_etl clean db=test
+pixi run python -m small_etl command=clean
+pixi run python -m small_etl command=clean db=test
 ```
 
 #### 3.1.4 退出码
@@ -222,7 +227,6 @@ pixi run python -m small_etl clean db=test
 |--------|------|
 | 0 | 成功 |
 | 1 | 一般错误 |
-| 2 | 参数错误 |
 
 #### 3.1.5 clean 命令
 
@@ -232,13 +236,13 @@ pixi run python -m small_etl clean db=test
 
 ```bash
 # 清空开发环境数据
-pixi run python -m small_etl clean
+pixi run python -m small_etl command=clean
 
 # 清空测试环境数据
-pixi run python -m small_etl clean db=test
+pixi run python -m small_etl command=clean db=test
 
 # 清空指定数据库
-pixi run python -m small_etl clean db.host=192.168.1.100 db.database=mydb
+pixi run python -m small_etl command=clean db.host=192.168.1.100 db.database=mydb
 ```
 
 ### 3.2 Scheduler 组件
@@ -298,48 +302,49 @@ class ETLScheduler:
 
 #### 3.2.2 CLI schedule 子命令
 
-**支持的操作:**
+**支持的操作（通过 `job.action` 配置）:**
 
 ```bash
 # 启动调度器（前台阻塞运行）
-pixi run python -m small_etl schedule start
+pixi run python -m small_etl command=schedule job.action=start
 
 # 添加定时任务
-pixi run python -m small_etl schedule add --job-id <id> --etl-command run --interval <interval> [--at <time>]
+pixi run python -m small_etl command=schedule job.action=add job.id=<id> job.command=run job.interval=<interval> job.at=<time>
 
 # 列出所有任务
-pixi run python -m small_etl schedule list
+pixi run python -m small_etl command=schedule job.action=list
 
 # 移除任务
-pixi run python -m small_etl schedule remove --job-id <id>
+pixi run python -m small_etl command=schedule job.action=remove job.id=<id>
 
 # 暂停任务
-pixi run python -m small_etl schedule pause --job-id <id>
+pixi run python -m small_etl command=schedule job.action=pause job.id=<id>
 
 # 恢复任务
-pixi run python -m small_etl schedule resume --job-id <id>
+pixi run python -m small_etl command=schedule job.action=resume job.id=<id>
 ```
 
 **参数说明:**
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
-| `--job-id` | 任务唯一标识符 | `daily_etl` |
-| `--etl-command` | ETL 命令 (仅支持 run) | `run` |
-| `--interval` | 调度间隔 (day/hour/minute) | `day` |
-| `--at` | 执行时间点 (仅 day 间隔有效) | `02:00` |
+| `job.action` | 操作类型 | `start`, `add`, `list`, `remove`, `pause`, `resume` |
+| `job.id` | 任务唯一标识符 | `daily_etl` |
+| `job.command` | ETL 命令 (仅支持 run) | `run` |
+| `job.interval` | 调度间隔 (day/hour/minute) | `day` |
+| `job.at` | 执行时间点 (仅 day 间隔有效) | `02:00` |
 
 **使用示例:**
 
 ```bash
 # 每天凌晨2点执行完整ETL
-pixi run python -m small_etl schedule add --job-id daily_etl --etl-command run --interval day --at "02:00"
+pixi run python -m small_etl command=schedule job.action=add job.id=daily_etl job.command=run job.interval=day job.at=02:00
 
 # 每小时执行
-pixi run python -m small_etl schedule add --job-id hourly_etl --etl-command run --interval hour
+pixi run python -m small_etl command=schedule job.action=add job.id=hourly_etl job.command=run job.interval=hour
 
 # 每分钟执行（测试用）
-pixi run python -m small_etl schedule add --job-id test_job --etl-command run --interval minute
+pixi run python -m small_etl command=schedule job.action=add job.id=test_job job.command=run job.interval=minute
 ```
 
 #### 3.2.3 调度配置
@@ -819,14 +824,32 @@ defaults:
   - db: dev
   - s3: dev
   - etl: default
-  - extractor: default    # 新增: CSV 格式配置
+  - extractor: default    # CSV 格式配置
   - scheduler: default
   - _self_
 
 app:
   name: small_etl
   version: 0.1.0
-  log_level: INFO
+
+# CLI 命令配置
+command: run  # run | clean | schedule
+
+# Schedule job 配置
+job:
+  id: ""
+  command: run
+  interval: day
+  at: ""
+  action: start  # start | add | list | remove | pause | resume
+
+hydra:
+  job_logging:
+    root:
+      level: INFO
+  run:
+    dir: .
+  output_subdir: null
 ```
 
 **数据库配置 (db/dev.yaml):**
@@ -1200,7 +1223,7 @@ src/small_etl/
 
 | 决策点 | 选择 | 理由 |
 |--------|------|------|
-| CLI | argparse | 标准库，无额外依赖，功能完整 |
+| CLI | Hydra | 纯配置驱动，与配置管理统一，简化代码 |
 | 任务调度 | APScheduler | 成熟的Python调度库，支持多种触发器，内置PostgreSQL持久化 |
 | 数据处理 | DuckDB + Polars | 高性能内存处理，列式存储优化 |
 | 验证框架 | Pandera Schema + 自定义验证 | Schema 定义清晰，验证逻辑灵活 |
@@ -1216,20 +1239,20 @@ src/small_etl/
 ### 11.1 CLI 命令行使用
 
 ```bash
-# 完整 ETL 流程
-pixi run python -m small_etl run
+# 完整 ETL 流程（默认命令）
+pixi run python -m small_etl
 
 # 使用测试环境
-pixi run python -m small_etl run db=test
+pixi run python -m small_etl db=test
 
 # 覆盖多个配置
-pixi run python -m small_etl run db.host=192.168.1.100 etl.batch_size=5000 s3.bucket=my-bucket
+pixi run python -m small_etl db.host=192.168.1.100 etl.batch_size=5000 s3.bucket=my-bucket
 
 # 清空数据表
-pixi run python -m small_etl clean
+pixi run python -m small_etl command=clean
 
 # 清空测试环境数据表
-pixi run python -m small_etl clean db=test
+pixi run python -m small_etl command=clean db=test
 ```
 
 ### 11.2 Python 脚本调用
@@ -1257,25 +1280,25 @@ with ETLPipeline(config) as pipeline:
 
 ```bash
 # 启动调度器（前台阻塞运行）
-pixi run python -m small_etl schedule start
+pixi run python -m small_etl command=schedule job.action=start
 
 # 添加每天凌晨2点执行完整ETL
-pixi run python -m small_etl schedule add --job-id daily_etl --etl-command run --interval day --at "02:00"
+pixi run python -m small_etl command=schedule job.action=add job.id=daily_etl job.command=run job.interval=day job.at=02:00
 
 # 添加每小时执行
-pixi run python -m small_etl schedule add --job-id hourly_etl --etl-command run --interval hour
+pixi run python -m small_etl command=schedule job.action=add job.id=hourly_etl job.command=run job.interval=hour
 
 # 查看所有定时任务
-pixi run python -m small_etl schedule list
+pixi run python -m small_etl command=schedule job.action=list
 
 # 暂停任务
-pixi run python -m small_etl schedule pause --job-id daily_etl
+pixi run python -m small_etl command=schedule job.action=pause job.id=daily_etl
 
 # 恢复任务
-pixi run python -m small_etl schedule resume --job-id daily_etl
+pixi run python -m small_etl command=schedule job.action=resume job.id=daily_etl
 
 # 移除任务
-pixi run python -m small_etl schedule remove --job-id daily_etl
+pixi run python -m small_etl command=schedule job.action=remove job.id=daily_etl
 ```
 
 **注意:** 任务存储在 PostgreSQL 中，进程重启后任务会自动恢复。

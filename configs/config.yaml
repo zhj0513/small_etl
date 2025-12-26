@@ -9,4 +9,34 @@ defaults:
 app:
   name: small_etl
   version: 0.1.0
-  log_level: INFO
+
+# CLI command configuration
+# Override via: command=run, command=clean, command=schedule
+command: run
+
+# Schedule job configuration (for schedule add command)
+# Override via: job.id=xxx job.command=run job.interval=day job.at=02:00
+job:
+  id: ""
+  command: run
+  interval: day
+  at: ""
+  action: start  # start/add/list/remove/pause/resume
+
+hydra:
+  job_logging:
+    root:
+      level: INFO
+      handlers: [console]
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stderr
+    formatters:
+      simple:
+        format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        datefmt: "%Y-%m-%d %H:%M:%S"
+  run:
+    dir: .
+  output_subdir: null

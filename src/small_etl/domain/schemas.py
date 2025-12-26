@@ -20,17 +20,17 @@ class AssetSchema(pa.DataFrameModel):
 
     account_id: str = pa.Field(str_length={"min_value": 1, "max_value": 20})
     account_type: int = pa.Field(isin=list(VALID_ACCOUNT_TYPES))
-    cash: float = pa.Field(ge=0)
-    frozen_cash: float = pa.Field(ge=0)
-    market_value: float = pa.Field(ge=0)
-    total_asset: float = pa.Field(ge=0)
+    cash: pl.Decimal(20, 2) = pa.Field(ge=0)  # type: ignore[valid-type]
+    frozen_cash: pl.Decimal(20, 2) = pa.Field(ge=0)  # type: ignore[valid-type]
+    market_value: pl.Decimal(20, 2) = pa.Field(ge=0)  # type: ignore[valid-type]
+    total_asset: pl.Decimal(20, 2) = pa.Field(ge=0)  # type: ignore[valid-type]
     updated_at: pl.Datetime = pa.Field()
 
     class Config:  # type: ignore[override]  # pyrefly: ignore[bad-override]
         """Pandera configuration."""
 
         strict = False  # Allow extra fields like id, _original_index
-        coerce = True
+        coerce = False  # Preserve Decimal precision, don't coerce to float
 
     @pa.dataframe_check  # type: ignore[misc]
     @classmethod
@@ -67,9 +67,9 @@ class TradeSchema(pa.DataFrameModel):
     traded_id: str = pa.Field(str_length={"min_value": 1, "max_value": 50})
     stock_code: str = pa.Field(str_length={"min_value": 1, "max_value": 10})
     traded_time: pl.Datetime = pa.Field()
-    traded_price: float = pa.Field(gt=0)
+    traded_price: pl.Decimal(20, 2) = pa.Field(gt=0)  # type: ignore[valid-type]
     traded_volume: int = pa.Field(gt=0)
-    traded_amount: float = pa.Field(gt=0)
+    traded_amount: pl.Decimal(20, 2) = pa.Field(gt=0)  # type: ignore[valid-type]
     strategy_name: str = pa.Field(str_length={"min_value": 1, "max_value": 50})
     order_remark: str = pa.Field(nullable=True)
     direction: int = pa.Field(isin=list(VALID_DIRECTIONS))
@@ -81,7 +81,7 @@ class TradeSchema(pa.DataFrameModel):
         """Pandera configuration."""
 
         strict = False  # Allow extra fields like id, _original_index
-        coerce = True
+        coerce = False  # Preserve Decimal precision, don't coerce to float
 
     @pa.dataframe_check  # type: ignore[misc]
     @classmethod
