@@ -110,19 +110,23 @@ class TestRunClean:
 
     def test_run_clean_success(self, capsys, mock_config):
         """Test successful clean operation."""
-        mock_repo = MagicMock()
-        mock_repo.get_asset_count.return_value = 10
-        mock_repo.get_trade_count.return_value = 20
+        mock_duckdb = MagicMock()
+        mock_duckdb.query_count.side_effect = [10, 20]
+        mock_duckdb.__enter__ = MagicMock(return_value=mock_duckdb)
+        mock_duckdb.__exit__ = MagicMock(return_value=False)
 
-        with patch("small_etl.data_access.postgres_repository.PostgresRepository", return_value=mock_repo):
-            result = run_clean(mock_config)
+        mock_repo = MagicMock()
+
+        with patch("small_etl.data_access.duckdb_client.DuckDBClient", return_value=mock_duckdb):
+            with patch("small_etl.data_access.postgres_repository.PostgresRepository", return_value=mock_repo):
+                result = run_clean(mock_config)
 
         assert result == EXIT_SUCCESS
         mock_repo.truncate_tables.assert_called_once()
 
     def test_run_clean_failure(self, capsys, mock_config):
         """Test failed clean operation."""
-        with patch("small_etl.data_access.postgres_repository.PostgresRepository", side_effect=Exception("Connection failed")):
+        with patch("small_etl.data_access.duckdb_client.DuckDBClient", side_effect=Exception("Connection failed")):
             result = run_clean(mock_config)
 
         assert result == EXIT_ERROR

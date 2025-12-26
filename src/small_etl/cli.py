@@ -49,10 +49,13 @@ def print_result(result: Any) -> None:
 
 def run_clean(cfg: DictConfig) -> int:
     """Truncate tables."""
+    from small_etl.data_access.duckdb_client import DuckDBClient
     from small_etl.data_access.postgres_repository import PostgresRepository
     try:
+        with DuckDBClient() as duckdb:
+            duckdb.attach_postgres(cfg.db.url)
+            a, t = duckdb.query_count("asset"), duckdb.query_count("trade")
         repo = PostgresRepository(cfg.db.url)
-        a, t = repo.get_asset_count(), repo.get_trade_count()
         repo.truncate_tables()
         repo.close()
         print(f"\nClean: SUCCESS - Deleted {a} assets, {t} trades\n")

@@ -102,7 +102,7 @@ class ETLPipeline:
 
             # === Phase 3: Load Assets ===
             logger.info("=== Phase 3: Load Assets ===")
-            assets_load = self._loader.load_assets(assets_df, batch_size=self._config.etl.batch_size)
+            assets_load = self._loader.load(assets_df, "asset", batch_size=self._config.etl.batch_size)
 
             if not assets_load.success:
                 return PipelineResult(
@@ -112,7 +112,7 @@ class ETLPipeline:
                     error_message=f"Asset loading failed: {assets_load.error_message}",
                 )
 
-            valid_account_ids = self._repo.get_all_account_ids()
+            valid_account_ids = self._duckdb.query_column_values("asset", "account_id")
             logger.info(f"Loaded {len(valid_account_ids)} accounts for trade validation")
 
             # === Phase 4: Read + Validate Trades ===
@@ -139,7 +139,7 @@ class ETLPipeline:
 
             # === Phase 6: Load Trades ===
             logger.info("=== Phase 6: Load Trades ===")
-            trades_load = self._loader.load_trades(trades_df, batch_size=self._config.etl.batch_size)
+            trades_load = self._loader.load(trades_df, "trade", batch_size=self._config.etl.batch_size)
 
             if not trades_load.success:
                 return PipelineResult(
@@ -199,7 +199,7 @@ class ETLPipeline:
                 )
 
             assets_df = self._extractor.transform(assets_validation.data, "asset")
-            assets_load = self._loader.load_assets(assets_df, batch_size=self._config.etl.batch_size)
+            assets_load = self._loader.load(assets_df, "asset", batch_size=self._config.etl.batch_size)
 
             if not assets_load.success:
                 return PipelineResult(
@@ -234,7 +234,7 @@ class ETLPipeline:
         logger.info("Starting ETL pipeline (trades only)")
 
         try:
-            valid_account_ids = self._repo.get_all_account_ids()
+            valid_account_ids = self._duckdb.query_column_values("asset", "account_id")
             if not valid_account_ids:
                 return PipelineResult(
                     success=False,
@@ -259,7 +259,7 @@ class ETLPipeline:
                 )
 
             trades_df = self._extractor.transform(trades_validation.data, "trade")
-            trades_load = self._loader.load_trades(trades_df, batch_size=self._config.etl.batch_size)
+            trades_load = self._loader.load(trades_df, "trade", batch_size=self._config.etl.batch_size)
 
             if not trades_load.success:
                 return PipelineResult(

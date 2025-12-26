@@ -146,11 +146,10 @@ class TestETLPipeline:
         mock_extractor.transform.side_effect = [mock_asset_df, mock_trade_df]
 
         mock_loader = mock_loader_cls.return_value
-        mock_loader.load_assets.return_value = mock_load_result_success
-        mock_loader.load_trades.return_value = mock_load_result_success
+        mock_loader.load.return_value = mock_load_result_success
 
-        mock_repo = mock_repo_cls.return_value
-        mock_repo.get_all_account_ids.return_value = {"10000000001", "10000000002"}
+        mock_duckdb = mock_duckdb_cls.return_value
+        mock_duckdb.query_column_values.return_value = {"10000000001", "10000000002"}
 
         mock_analytics = mock_analytics_cls.return_value
         mock_analytics.asset_statistics_from_db.return_value = {}
@@ -222,7 +221,7 @@ class TestETLPipeline:
         mock_extractor.transform.return_value = mock_asset_df
 
         mock_loader = mock_loader_cls.return_value
-        mock_loader.load_assets.return_value = mock_load_result_failure
+        mock_loader.load.return_value = mock_load_result_failure
 
         pipeline = ETLPipeline(mock_config)
         result = pipeline.run()
@@ -261,10 +260,10 @@ class TestETLPipeline:
         mock_extractor.transform.return_value = mock_asset_df
 
         mock_loader = mock_loader_cls.return_value
-        mock_loader.load_assets.return_value = mock_load_result_success
+        mock_loader.load.return_value = mock_load_result_success
 
-        mock_repo = mock_repo_cls.return_value
-        mock_repo.get_all_account_ids.return_value = {"10000000001", "10000000002"}
+        mock_duckdb = mock_duckdb_cls.return_value
+        mock_duckdb.query_column_values.return_value = {"10000000001", "10000000002"}
 
         pipeline = ETLPipeline(mock_config)
         result = pipeline.run()
@@ -326,7 +325,7 @@ class TestETLPipeline:
         mock_extractor.transform.return_value = mock_asset_df
 
         mock_loader = mock_loader_cls.return_value
-        mock_loader.load_assets.return_value = mock_load_result_success
+        mock_loader.load.return_value = mock_load_result_success
 
         mock_analytics = mock_analytics_cls.return_value
         mock_analytics.asset_statistics_from_db.return_value = {}
@@ -357,8 +356,8 @@ class TestETLPipeline:
         mock_load_result_success: LoadResult,
     ) -> None:
         """Test trades-only pipeline run."""
-        mock_repo = mock_repo_cls.return_value
-        mock_repo.get_all_account_ids.return_value = {"10000000001", "10000000002"}
+        mock_duckdb = mock_duckdb_cls.return_value
+        mock_duckdb.query_column_values.return_value = {"10000000001", "10000000002"}
 
         mock_validator = mock_validator_cls.return_value
         mock_validator.fetch_and_validate.return_value = ValidationResult(is_valid=True, data=mock_trade_df)
@@ -367,7 +366,7 @@ class TestETLPipeline:
         mock_extractor.transform.return_value = mock_trade_df
 
         mock_loader = mock_loader_cls.return_value
-        mock_loader.load_trades.return_value = mock_load_result_success
+        mock_loader.load.return_value = mock_load_result_success
 
         mock_analytics = mock_analytics_cls.return_value
         mock_analytics.trade_statistics_from_db.return_value = {}
@@ -395,8 +394,8 @@ class TestETLPipeline:
         mock_config: MagicMock,
     ) -> None:
         """Test trades-only pipeline fails when no accounts exist."""
-        mock_repo = mock_repo_cls.return_value
-        mock_repo.get_all_account_ids.return_value = set()
+        mock_duckdb = mock_duckdb_cls.return_value
+        mock_duckdb.query_column_values.return_value = set()
 
         pipeline = ETLPipeline(mock_config)
         result = pipeline.run_trades_only()

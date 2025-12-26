@@ -77,7 +77,7 @@ class TestLoaderService:
             "updated_at": [],
         })
 
-        result = loader.load_assets(empty_df)
+        result = loader.load(empty_df, "asset")
 
         assert result.success is True
         assert result.total_rows == 0
@@ -103,7 +103,7 @@ class TestLoaderService:
             "updated_at": [],
         })
 
-        result = loader.load_trades(empty_df)
+        result = loader.load(empty_df, "trade")
 
         assert result.success is True
         assert result.total_rows == 0
@@ -114,7 +114,7 @@ class TestLoaderService:
         """Test loading assets with error."""
         mock_duckdb.upsert_to_postgres.side_effect = Exception("Database error")
 
-        result = loader.load_assets(sample_asset_df)
+        result = loader.load(sample_asset_df, "asset")
 
         assert result.success is False
         assert result.error_message == "Database error"
@@ -124,7 +124,7 @@ class TestLoaderService:
         """Test loading trades with error."""
         mock_duckdb.upsert_to_postgres.side_effect = Exception("Database error")
 
-        result = loader.load_trades(sample_trade_df)
+        result = loader.load(sample_trade_df, "trade")
 
         assert result.success is False
         assert result.error_message == "Database error"
@@ -134,7 +134,7 @@ class TestLoaderService:
         """Test loading assets with small batch size."""
         mock_duckdb.upsert_to_postgres.return_value = 1
 
-        result = loader.load_assets(sample_asset_df, batch_size=1)
+        result = loader.load(sample_asset_df, "asset", batch_size=1)
 
         assert result.success is True
         assert result.loaded_count == 2
@@ -144,7 +144,7 @@ class TestLoaderService:
         """Test loading trades with small batch size."""
         mock_duckdb.upsert_to_postgres.return_value = 1
 
-        result = loader.load_trades(sample_trade_df, batch_size=1)
+        result = loader.load(sample_trade_df, "trade", batch_size=1)
 
         assert result.success is True
         assert result.loaded_count == 1

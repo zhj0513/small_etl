@@ -99,6 +99,39 @@ class DuckDBClient:
         result = self._conn.execute(sql)
         return result.pl()
 
+    def query_column_values(self, table: str, column: str) -> set[str]:
+        """Query distinct values of a column from PostgreSQL table.
+
+        Args:
+            table: Table name (without pg. prefix).
+            column: Column name to query.
+
+        Returns:
+            Set of distinct values as strings.
+        """
+        if not self._pg_attached:
+            raise RuntimeError("PostgreSQL not attached. Call attach_postgres() first.")
+
+        sql = f"SELECT DISTINCT {column} FROM pg.{table}"
+        result = self._conn.execute(sql).fetchall()
+        return {str(row[0]) for row in result}
+
+    def query_count(self, table: str) -> int:
+        """Query row count of a PostgreSQL table.
+
+        Args:
+            table: Table name (without pg. prefix).
+
+        Returns:
+            Number of rows in the table.
+        """
+        if not self._pg_attached:
+            raise RuntimeError("PostgreSQL not attached. Call attach_postgres() first.")
+
+        sql = f"SELECT COUNT(*) FROM pg.{table}"
+        result = self._conn.execute(sql).fetchone()
+        return result[0] if result else 0
+
     def query_asset_statistics(self) -> dict[str, Any]:
         """Query asset statistics from PostgreSQL via DuckDB.
 

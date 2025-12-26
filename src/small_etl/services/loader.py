@@ -119,31 +119,3 @@ class LoaderService:
                 failed_count=len(df) - total_loaded,
                 error_message=str(e),
             )
-
-    def load_assets(self, df: pl.DataFrame, batch_size: int = 10000) -> LoadResult:
-        """Load asset data into PostgreSQL.
-
-        Convenience method that delegates to generic load().
-
-        Args:
-            df: DataFrame with validated asset data.
-            batch_size: Number of records per batch (default: 10000).
-
-        Returns:
-            LoadResult with loading statistics.
-        """
-        return self.load(df, "asset", batch_size)
-
-    def load_trades(self, df: pl.DataFrame, batch_size: int = 10000) -> LoadResult:
-        """Load trade data into PostgreSQL.
-
-        Convenience method that delegates to generic load().
-
-        Args:
-            df: DataFrame with validated trade data.
-            batch_size: Number of records per batch (default: 10000).
-
-        Returns:
-            LoadResult with loading statistics.
-        """
-        return self.load(df, "trade", batch_size)
