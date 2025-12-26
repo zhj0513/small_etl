@@ -39,14 +39,16 @@ class TestPrintResult:
 
     def test_print_result_success(self, capsys):
         """Test printing successful result."""
-        from small_etl.application.pipeline import PipelineResult
+        from small_etl.application.pipeline import PipelineResult, StepResult
 
         result = PipelineResult(
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            assets_loaded=100,
-            trades_loaded=500,
+            step_results=[
+                StepResult(data_type="asset", success=True, loaded_count=100),
+                StepResult(data_type="trade", success=True, loaded_count=500),
+            ],
         )
         print_result(result)
 
@@ -73,13 +75,15 @@ class TestPrintResult:
 
     def test_print_result_with_assets_only(self, capsys):
         """Test printing result with only assets loaded."""
-        from small_etl.application.pipeline import PipelineResult
+        from small_etl.application.pipeline import PipelineResult, StepResult
 
         result = PipelineResult(
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            assets_loaded=100,
+            step_results=[
+                StepResult(data_type="asset", success=True, loaded_count=100),
+            ],
         )
         print_result(result)
 

@@ -1,0 +1,13 @@
+# Pipeline configuration - defines the ETL processing steps
+# Each step specifies a data type to process in order
+
+# Processing steps in order
+# Each step references a registered data type from DataTypeRegistry
+steps:
+  - data_type: asset
+    enabled: true
+  - data_type: trade
+    enabled: true
+
+# Whether to compute analytics after loading
+compute_analytics: true

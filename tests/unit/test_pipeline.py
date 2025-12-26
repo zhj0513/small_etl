@@ -191,7 +191,7 @@ class TestETLPipeline:
         result = pipeline.run()
 
         assert result.success is False
-        assert "Asset validation failed" in result.error_message
+        assert "Validation failed" in result.error_message
         mock_validator.fetch_and_validate.assert_called_once()
 
     @patch("small_etl.application.pipeline.DuckDBClient")
@@ -227,7 +227,7 @@ class TestETLPipeline:
         result = pipeline.run()
 
         assert result.success is False
-        assert "Asset loading failed" in result.error_message
+        assert "Loading failed" in result.error_message
 
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
@@ -269,7 +269,7 @@ class TestETLPipeline:
         result = pipeline.run()
 
         assert result.success is False
-        assert "Trade validation failed" in result.error_message
+        assert "Validation failed" in result.error_message
         assert result.assets_loaded == 2
 
     @patch("small_etl.application.pipeline.DuckDBClient")
@@ -401,7 +401,7 @@ class TestETLPipeline:
         result = pipeline.run_trades_only()
 
         assert result.success is False
-        assert "No accounts found" in result.error_message
+        assert "No foreign keys found" in result.error_message
 
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
@@ -435,12 +435,16 @@ class TestPipelineResult:
 
     def test_pipeline_result_success(self) -> None:
         """Test PipelineResult with success."""
+        from small_etl.application.pipeline import StepResult
+
         result = PipelineResult(
             success=True,
             started_at=datetime(2025, 12, 22, 10, 0, 0),
             completed_at=datetime(2025, 12, 22, 10, 5, 0),
-            assets_loaded=100,
-            trades_loaded=500,
+            step_results=[
+                StepResult(data_type="asset", success=True, loaded_count=100),
+                StepResult(data_type="trade", success=True, loaded_count=500),
+            ],
         )
 
         assert result.success is True
@@ -459,3 +463,5 @@ class TestPipelineResult:
 
         assert result.success is False
         assert result.error_message == "Pipeline failed"
+        assert result.assets_loaded == 0
+        assert result.trades_loaded == 0
