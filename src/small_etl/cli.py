@@ -160,16 +160,10 @@ def print_result(result: PipelineResult) -> None:
         duration = (result.completed_at - result.started_at).total_seconds()
         print(f"Duration: {duration:.2f}s")
 
-    # Print results for each data type
-    for data_type, type_result in result.results.items():
-        label = data_type.capitalize()
-
-        if type_result.validation:
-            v = type_result.validation
-            print(f"\n{label}: Total={v.total_rows}, Valid={v.valid_count}, Invalid={v.invalid_count}")
-
-        if type_result.load:
-            print(f"{label} Load: {type_result.load.loaded_count} loaded")
+    if result.assets_loaded > 0:
+        print(f"Assets loaded: {result.assets_loaded}")
+    if result.trades_loaded > 0:
+        print(f"Trades loaded: {result.trades_loaded}")
 
     print("=" * 60 + "\n")
 

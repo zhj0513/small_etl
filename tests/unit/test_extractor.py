@@ -1,7 +1,6 @@
 """Unit tests for ExtractorService."""
 
 from datetime import datetime
-from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
@@ -14,14 +13,9 @@ class TestExtractorService:
     """Tests for ExtractorService."""
 
     @pytest.fixture
-    def mock_duckdb_client(self):
-        """Create a mock DuckDB client."""
-        return MagicMock()
-
-    @pytest.fixture
-    def extractor_no_config(self, mock_duckdb_client):
+    def extractor_no_config(self):
         """Create ExtractorService without config."""
-        return ExtractorService(mock_duckdb_client, config=None)
+        return ExtractorService(config=None)
 
     @pytest.fixture
     def assets_config(self):
@@ -90,15 +84,19 @@ class TestExtractorService:
             }
         )
 
-    def test_init(self, mock_duckdb_client):
+    def test_init(self):
         """Test ExtractorService initialization."""
-        extractor = ExtractorService(mock_duckdb_client)
-        assert extractor._duckdb == mock_duckdb_client
+        extractor = ExtractorService()
         assert extractor._config is None
 
-    def test_extract_asset_no_config(self, mock_duckdb_client):
-        """Test extract asset using DuckDB without config transformation."""
-        expected_df = pl.DataFrame(
+    def test_init_with_config(self, assets_config):
+        """Test ExtractorService initialization with config."""
+        extractor = ExtractorService(config=assets_config)
+        assert extractor._config is not None
+
+    def test_transform_asset_no_config(self):
+        """Test transform asset without config (pass-through)."""
+        df = pl.DataFrame(
             {
                 "id": [1],
                 "account_id": ["10000000001"],
@@ -110,18 +108,15 @@ class TestExtractorService:
                 "updated_at": [datetime(2025, 12, 22, 14, 30, 0)],
             }
         )
-        mock_duckdb_client.query.return_value = expected_df
 
-        extractor = ExtractorService(mock_duckdb_client, config=None)
-        result = extractor.extract("test-bucket", "assets.csv", "asset")
+        extractor = ExtractorService(config=None)
+        result = extractor.transform(df, "asset")
 
-        mock_duckdb_client.load_csv_from_s3.assert_called_once_with("test-bucket", "assets.csv", "raw_assets")
-        mock_duckdb_client.query.assert_called_once()
         assert len(result) == 1
+        assert result.columns == df.columns
 
-    def test_extract_asset_with_config(self, mock_duckdb_client, assets_config):
-        """Test extract asset using DuckDB with config transformation."""
-        # DuckDB returns raw DataFrame (string columns from CSV)
+    def test_transform_asset_with_config(self, assets_config):
+        """Test transform asset with config transformation."""
         raw_df = pl.DataFrame(
             {
                 "id": ["1"],
@@ -134,19 +129,19 @@ class TestExtractorService:
                 "updated_at": ["2025-12-22 14:30:00"],
             }
         )
-        mock_duckdb_client.query.return_value = raw_df
 
-        extractor = ExtractorService(mock_duckdb_client, config=assets_config)
-        result = extractor.extract("test-bucket", "assets.csv", "asset")
+        extractor = ExtractorService(config=assets_config)
+        result = extractor.transform(raw_df, "asset")
 
-        mock_duckdb_client.load_csv_from_s3.assert_called_once_with("test-bucket", "assets.csv", "raw_assets")
-        mock_duckdb_client.query.assert_called_once()
         assert len(result) == 1
         assert "account_id" in result.columns
+        assert result["id"].dtype == pl.Int64
+        assert result["account_type"].dtype == pl.Int32
+        assert result["cash"].dtype == pl.Float64
 
-    def test_extract_trade_no_config(self, mock_duckdb_client):
-        """Test extract trade using DuckDB without config transformation."""
-        expected_df = pl.DataFrame(
+    def test_transform_trade_no_config(self):
+        """Test transform trade without config (pass-through)."""
+        df = pl.DataFrame(
             {
                 "id": [1],
                 "account_id": ["10000000001"],
@@ -165,18 +160,15 @@ class TestExtractorService:
                 "updated_at": [datetime(2025, 12, 22, 14, 30, 0)],
             }
         )
-        mock_duckdb_client.query.return_value = expected_df
 
-        extractor = ExtractorService(mock_duckdb_client, config=None)
-        result = extractor.extract("test-bucket", "trades.csv", "trade")
+        extractor = ExtractorService(config=None)
+        result = extractor.transform(df, "trade")
 
-        mock_duckdb_client.load_csv_from_s3.assert_called_once_with("test-bucket", "trades.csv", "raw_trades")
-        mock_duckdb_client.query.assert_called_once()
         assert len(result) == 1
+        assert result.columns == df.columns
 
-    def test_extract_trade_with_config(self, mock_duckdb_client, trades_config):
-        """Test extract trade using DuckDB with config transformation."""
-        # DuckDB returns raw DataFrame
+    def test_transform_trade_with_config(self, trades_config):
+        """Test transform trade with config transformation."""
         raw_df = pl.DataFrame(
             {
                 "id": ["1"],
@@ -196,30 +188,29 @@ class TestExtractorService:
                 "updated_at": ["2025-12-22 14:30:00"],
             }
         )
-        mock_duckdb_client.query.return_value = raw_df
 
-        extractor = ExtractorService(mock_duckdb_client, config=trades_config)
-        result = extractor.extract("test-bucket", "trades.csv", "trade")
+        extractor = ExtractorService(config=trades_config)
+        result = extractor.transform(raw_df, "trade")
 
-        mock_duckdb_client.load_csv_from_s3.assert_called_once_with("test-bucket", "trades.csv", "raw_trades")
-        mock_duckdb_client.query.assert_called_once()
         assert len(result) == 1
         assert "traded_id" in result.columns
+        assert result["traded_price"].dtype == pl.Float64
+        assert result["traded_volume"].dtype == pl.Int64
 
-    def test_transform_dataframe_with_missing_column(self, mock_duckdb_client):
+    def test_transform_dataframe_with_missing_column(self):
         """Test _transform_dataframe skips missing columns."""
         config = OmegaConf.create(
             {
                 "assets": {
                     "columns": [
                         {"csv_name": "account_id", "name": "account_id", "dtype": "Utf8"},
-                        {"csv_name": "nonexistent", "name": "nonexistent", "dtype": "Utf8"},  # Missing column
+                        {"csv_name": "nonexistent", "name": "nonexistent", "dtype": "Utf8"},
                     ]
                 }
             }
         )
 
-        extractor = ExtractorService(mock_duckdb_client, config=config)
+        extractor = ExtractorService(config=config)
 
         df = pl.DataFrame({"account_id": ["10000000001"]})
         result = extractor._transform_dataframe(df, config.assets.columns)
@@ -227,7 +218,7 @@ class TestExtractorService:
         assert "account_id" in result.columns
         assert "nonexistent" not in result.columns
 
-    def test_transform_dataframe_all_dtypes(self, mock_duckdb_client):
+    def test_transform_dataframe_all_dtypes(self):
         """Test _transform_dataframe with all supported dtypes."""
         config = OmegaConf.create(
             {
@@ -238,13 +229,13 @@ class TestExtractorService:
                         {"csv_name": "utf8_col", "name": "utf8_col", "dtype": "Utf8"},
                         {"csv_name": "float64_col", "name": "float64_col", "dtype": "Float64"},
                         {"csv_name": "datetime_col", "name": "datetime_col", "dtype": "Datetime", "format": "%Y-%m-%d %H:%M:%S"},
-                        {"csv_name": "unknown_col", "name": "unknown_col", "dtype": "Unknown"},  # Unknown type
+                        {"csv_name": "unknown_col", "name": "unknown_col", "dtype": "Unknown"},
                     ]
                 }
             }
         )
 
-        extractor = ExtractorService(mock_duckdb_client, config=config)
+        extractor = ExtractorService(config=config)
 
         df = pl.DataFrame(
             {
@@ -263,5 +254,33 @@ class TestExtractorService:
         assert result["utf8_col"].dtype == pl.Utf8
         assert result["float64_col"].dtype == pl.Float64
         assert result["datetime_col"].dtype == pl.Datetime
-        # Unknown type should use alias (pass through)
         assert "unknown_col" in result.columns
+
+    def test_transform_already_typed_columns(self):
+        """Test _transform_dataframe skips already correctly typed columns."""
+        config = OmegaConf.create(
+            {
+                "assets": {
+                    "columns": [
+                        {"csv_name": "id", "name": "id", "dtype": "Int64"},
+                        {"csv_name": "cash", "name": "cash", "dtype": "Float64"},
+                        {"csv_name": "updated_at", "name": "updated_at", "dtype": "Datetime"},
+                    ]
+                }
+            }
+        )
+
+        extractor = ExtractorService(config=config)
+
+        df = pl.DataFrame(
+            {
+                "id": [1, 2],
+                "cash": [100.0, 200.0],
+                "updated_at": [datetime(2025, 12, 22), datetime(2025, 12, 23)],
+            }
+        )
+        result = extractor._transform_dataframe(df, config.assets.columns)
+
+        assert result["id"].dtype == pl.Int64
+        assert result["cash"].dtype == pl.Float64
+        assert str(result["updated_at"].dtype).startswith("Datetime")

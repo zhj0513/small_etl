@@ -1,7 +1,7 @@
 """ETL Pipeline for orchestrating the data flow."""
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -9,10 +9,10 @@ from omegaconf import DictConfig
 
 from small_etl.data_access.duckdb_client import DuckDBClient
 from small_etl.data_access.postgres_repository import PostgresRepository
-from small_etl.services.analytics import AnalyticsService, AssetStatistics, TradeStatistics
+from small_etl.services.analytics import AnalyticsService
 from small_etl.services.extractor import ExtractorService
-from small_etl.services.loader import LoaderService, LoadResult
-from small_etl.services.validator import ValidationResult, ValidatorService
+from small_etl.services.loader import LoaderService
+from small_etl.services.validator import ValidatorService
 
 logger = logging.getLogger(__name__)
 
@@ -23,99 +23,43 @@ def _utc_now() -> datetime:
 
 
 @dataclass
-class DataTypeResult:
-    """Result for a single data type processing.
-
-    Attributes:
-        data_type: Name of the data type (e.g., "asset", "trade").
-        validation: Validation result.
-        load: Loading result.
-        statistics: Statistics (type varies by data type).
-    """
-
-    data_type: str
-    validation: ValidationResult | None = None
-    load: LoadResult | None = None
-    statistics: Any = None
-
-
-@dataclass
 class PipelineResult:
-    """Result of ETL pipeline execution.
-
-    Attributes:
-        success: True if pipeline completed successfully.
-        started_at: Pipeline start timestamp.
-        completed_at: Pipeline completion timestamp.
-        results: Dictionary of results by data type.
-        error_message: Error message if pipeline failed.
-    """
+    """Result of ETL pipeline execution."""
 
     success: bool
     started_at: datetime
     completed_at: datetime | None = None
-    results: dict[str, DataTypeResult] = field(default_factory=dict)
     error_message: str | None = None
-
-    # Backward compatibility properties
-    @property
-    def assets_validation(self) -> ValidationResult | None:
-        """Get asset validation result (backward compatibility)."""
-        return self.results.get("asset", DataTypeResult("asset")).validation
-
-    @property
-    def trades_validation(self) -> ValidationResult | None:
-        """Get trade validation result (backward compatibility)."""
-        return self.results.get("trade", DataTypeResult("trade")).validation
-
-    @property
-    def assets_load(self) -> LoadResult | None:
-        """Get asset load result (backward compatibility)."""
-        return self.results.get("asset", DataTypeResult("asset")).load
-
-    @property
-    def trades_load(self) -> LoadResult | None:
-        """Get trade load result (backward compatibility)."""
-        return self.results.get("trade", DataTypeResult("trade")).load
-
-    @property
-    def assets_stats(self) -> AssetStatistics | None:
-        """Get asset statistics (backward compatibility)."""
-        stats = self.results.get("asset", DataTypeResult("asset")).statistics
-        return stats if isinstance(stats, AssetStatistics) else None
-
-    @property
-    def trades_stats(self) -> TradeStatistics | None:
-        """Get trade statistics (backward compatibility)."""
-        stats = self.results.get("trade", DataTypeResult("trade")).statistics
-        return stats if isinstance(stats, TradeStatistics) else None
+    assets_loaded: int = 0
+    trades_loaded: int = 0
+    assets_stats: Any = None
+    trades_stats: Any = None
 
 
 class ETLPipeline:
     """ETL Pipeline for S3 CSV to PostgreSQL data synchronization.
 
-    Orchestrates the full ETL process:
-    1. Extract data from S3 CSV files
-    2. Validate data using DuckDB and validation rules
-    3. Load valid data into PostgreSQL
-    4. Compute analytics on the loaded data
-
-    Args:
-        config: Hydra configuration with db, s3, and etl settings.
+    Data flow:
+    1. Read CSV from S3 using Polars (via ValidatorService)
+    2. Validate data using Pandera schemas - fail fast if invalid
+    3. Transform data types (via ExtractorService)
+    4. Load data into PostgreSQL
+    5. Compute analytics on the loaded data
     """
 
     def __init__(self, config: DictConfig) -> None:
         self._config = config
 
-        self._duckdb = DuckDBClient(s3_config=config.s3)
+        self._duckdb = DuckDBClient()
 
         echo = getattr(config.db, "echo", False)
         self._repo = PostgresRepository(config.db.url, echo=echo)
 
-        self._extractor = ExtractorService(
-            self._duckdb, config=getattr(config, "extractor", None)
+        self._validator = ValidatorService(
+            tolerance=config.etl.validation.tolerance,
+            s3_config=config.s3,
         )
-        self._validator = ValidatorService(tolerance=config.etl.validation.tolerance)
+        self._extractor = ExtractorService(config=getattr(config, "extractor", None))
         self._loader = LoaderService(
             repository=self._repo,
             duckdb_client=self._duckdb,
@@ -123,7 +67,6 @@ class ETLPipeline:
         )
         self._analytics = AnalyticsService(duckdb_client=self._duckdb)
 
-        # Attach PostgreSQL to DuckDB for analytics
         self._duckdb.attach_postgres(config.db.url)
 
         logger.info("ETLPipeline initialized")
@@ -138,82 +81,93 @@ class ETLPipeline:
         logger.info("Starting ETL pipeline")
 
         try:
-            logger.info("=== Phase 1: Extract Assets ===")
-            assets_df = self._extractor.extract(
+            # === Phase 1: Read + Validate Assets ===
+            logger.info("=== Phase 1: Read and Validate Assets ===")
+            assets_validation = self._validator.fetch_and_validate(
                 bucket=self._config.s3.bucket,
                 object_name=self._config.s3.assets_file,
                 data_type="asset",
             )
 
-            logger.info("=== Phase 2: Validate Assets ===")
-            assets_validation = self._validator.validate_assets(assets_df)
-
             if not assets_validation.is_valid:
-                logger.warning(f"Asset validation has {assets_validation.invalid_count} invalid records")
+                return PipelineResult(
+                    success=False,
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                    error_message=f"Asset validation failed: {assets_validation.error_message}",
+                )
 
+            # === Phase 2: Transform Assets ===
+            logger.info("=== Phase 2: Transform Assets ===")
+            assets_df = self._extractor.transform(assets_validation.data, "asset")
+
+            # === Phase 3: Load Assets ===
             logger.info("=== Phase 3: Load Assets ===")
-            assets_load = self._loader.load_assets(
-                assets_validation.valid_rows,
-                batch_size=self._config.etl.batch_size,
-            )
+            assets_load = self._loader.load_assets(assets_df, batch_size=self._config.etl.batch_size)
 
             if not assets_load.success:
-                raise RuntimeError(f"Asset loading failed: {assets_load.error_message}")
+                return PipelineResult(
+                    success=False,
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                    error_message=f"Asset loading failed: {assets_load.error_message}",
+                )
 
             valid_account_ids = self._repo.get_all_account_ids()
             logger.info(f"Loaded {len(valid_account_ids)} accounts for trade validation")
 
-            logger.info("=== Phase 4: Extract Trades ===")
-            trades_df = self._extractor.extract(
+            # === Phase 4: Read + Validate Trades ===
+            logger.info("=== Phase 4: Read and Validate Trades ===")
+            trades_validation = self._validator.fetch_and_validate(
                 bucket=self._config.s3.bucket,
                 object_name=self._config.s3.trades_file,
                 data_type="trade",
+                valid_foreign_keys=valid_account_ids,
             )
-
-            logger.info("=== Phase 5: Validate Trades ===")
-            trades_validation = self._validator.validate_trades(trades_df, valid_account_ids)
 
             if not trades_validation.is_valid:
-                logger.warning(f"Trade validation has {trades_validation.invalid_count} invalid records")
+                return PipelineResult(
+                    success=False,
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                    error_message=f"Trade validation failed: {trades_validation.error_message}",
+                    assets_loaded=assets_load.loaded_count,
+                )
 
+            # === Phase 5: Transform Trades ===
+            logger.info("=== Phase 5: Transform Trades ===")
+            trades_df = self._extractor.transform(trades_validation.data, "trade")
+
+            # === Phase 6: Load Trades ===
             logger.info("=== Phase 6: Load Trades ===")
-            trades_load = self._loader.load_trades(
-                trades_validation.valid_rows,
-                batch_size=self._config.etl.batch_size,
-            )
+            trades_load = self._loader.load_trades(trades_df, batch_size=self._config.etl.batch_size)
 
             if not trades_load.success:
-                raise RuntimeError(f"Trade loading failed: {trades_load.error_message}")
+                return PipelineResult(
+                    success=False,
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                    error_message=f"Trade loading failed: {trades_load.error_message}",
+                    assets_loaded=assets_load.loaded_count,
+                )
 
-            logger.info("=== Phase 7: Compute Analytics from Database (via DuckDB) ===")
+            # === Phase 7: Analytics ===
+            logger.info("=== Phase 7: Compute Analytics from Database ===")
             assets_stats = self._analytics.asset_statistics_from_db()
             trades_stats = self._analytics.trade_statistics_from_db()
 
             completed_at = _utc_now()
             duration = (completed_at - started_at).total_seconds()
-            logger.info("--- ETL statistics ---")
-            logger.info(f"Asset statistics: \n{assets_stats}")
-            logger.info(f"Trade statistics: \n{trades_stats}")
             logger.info(f"ETL pipeline completed successfully in {duration:.2f}s")
 
             return PipelineResult(
                 success=True,
                 started_at=started_at,
                 completed_at=completed_at,
-                results={
-                    "asset": DataTypeResult(
-                        data_type="asset",
-                        validation=assets_validation,
-                        load=assets_load,
-                        statistics=assets_stats,
-                    ),
-                    "trade": DataTypeResult(
-                        data_type="trade",
-                        validation=trades_validation,
-                        load=trades_load,
-                        statistics=trades_stats,
-                    ),
-                },
+                assets_loaded=assets_load.loaded_count,
+                trades_loaded=trades_load.loaded_count,
+                assets_stats=assets_stats,
+                trades_stats=trades_stats,
             )
 
         except Exception as e:
@@ -226,42 +180,44 @@ class ETLPipeline:
             )
 
     def run_assets_only(self) -> PipelineResult:
-        """Run ETL pipeline for assets only.
-
-        Returns:
-            PipelineResult with asset processing results.
-        """
+        """Run ETL pipeline for assets only."""
         started_at = _utc_now()
         logger.info("Starting ETL pipeline (assets only)")
 
         try:
-            assets_df = self._extractor.extract(
+            assets_validation = self._validator.fetch_and_validate(
                 bucket=self._config.s3.bucket,
                 object_name=self._config.s3.assets_file,
                 data_type="asset",
             )
 
-            assets_validation = self._validator.validate_assets(assets_df)
+            if not assets_validation.is_valid:
+                return PipelineResult(
+                    success=False,
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                    error_message=f"Asset validation failed: {assets_validation.error_message}",
+                )
 
-            assets_load = self._loader.load_assets(
-                assets_validation.valid_rows,
-                batch_size=self._config.etl.batch_size,
-            )
+            assets_df = self._extractor.transform(assets_validation.data, "asset")
+            assets_load = self._loader.load_assets(assets_df, batch_size=self._config.etl.batch_size)
+
+            if not assets_load.success:
+                return PipelineResult(
+                    success=False,
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                    error_message=f"Asset loading failed: {assets_load.error_message}",
+                )
 
             assets_stats = self._analytics.asset_statistics_from_db()
 
             return PipelineResult(
-                success=assets_load.success,
+                success=True,
                 started_at=started_at,
                 completed_at=_utc_now(),
-                results={
-                    "asset": DataTypeResult(
-                        data_type="asset",
-                        validation=assets_validation,
-                        load=assets_load,
-                        statistics=assets_stats,
-                    ),
-                },
+                assets_loaded=assets_load.loaded_count,
+                assets_stats=assets_stats,
             )
 
         except Exception as e:
@@ -274,48 +230,54 @@ class ETLPipeline:
             )
 
     def run_trades_only(self) -> PipelineResult:
-        """Run ETL pipeline for trades only.
-
-        Requires assets to be already loaded for foreign key validation.
-
-        Returns:
-            PipelineResult with trade processing results.
-        """
+        """Run ETL pipeline for trades only. Requires assets to be already loaded."""
         started_at = _utc_now()
         logger.info("Starting ETL pipeline (trades only)")
 
         try:
             valid_account_ids = self._repo.get_all_account_ids()
             if not valid_account_ids:
-                raise RuntimeError("No accounts found. Load assets first.")
+                return PipelineResult(
+                    success=False,
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                    error_message="No accounts found. Load assets first.",
+                )
 
-            trades_df = self._extractor.extract(
+            trades_validation = self._validator.fetch_and_validate(
                 bucket=self._config.s3.bucket,
                 object_name=self._config.s3.trades_file,
                 data_type="trade",
+                valid_foreign_keys=valid_account_ids,
             )
 
-            trades_validation = self._validator.validate_trades(trades_df, valid_account_ids)
+            if not trades_validation.is_valid:
+                return PipelineResult(
+                    success=False,
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                    error_message=f"Trade validation failed: {trades_validation.error_message}",
+                )
 
-            trades_load = self._loader.load_trades(
-                trades_validation.valid_rows,
-                batch_size=self._config.etl.batch_size,
-            )
+            trades_df = self._extractor.transform(trades_validation.data, "trade")
+            trades_load = self._loader.load_trades(trades_df, batch_size=self._config.etl.batch_size)
+
+            if not trades_load.success:
+                return PipelineResult(
+                    success=False,
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                    error_message=f"Trade loading failed: {trades_load.error_message}",
+                )
 
             trades_stats = self._analytics.trade_statistics_from_db()
 
             return PipelineResult(
-                success=trades_load.success,
+                success=True,
                 started_at=started_at,
                 completed_at=_utc_now(),
-                results={
-                    "trade": DataTypeResult(
-                        data_type="trade",
-                        validation=trades_validation,
-                        load=trades_load,
-                        statistics=trades_stats,
-                    ),
-                },
+                trades_loaded=trades_load.loaded_count,
+                trades_stats=trades_stats,
             )
 
         except Exception as e:

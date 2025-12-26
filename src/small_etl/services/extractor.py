@@ -1,4 +1,4 @@
-"""Extractor service for data extraction from S3 using DuckDB."""
+"""Extractor service for data type conversion."""
 
 from __future__ import annotations
 
@@ -7,9 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from small_etl.data_access.duckdb_client import DuckDBClient
-from small_etl.domain.registry import DataTypeRegistry
-
 if TYPE_CHECKING:
     from omegaconf import DictConfig
 
@@ -17,19 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 class ExtractorService:
-    """Service for extracting data from S3 CSV files using DuckDB.
+    """Service for transforming validated data with type conversions.
 
     Args:
-        duckdb_client: DuckDB client instance with S3 configured.
-        config: Optional Hydra configuration for CSV format definitions.
+        config: Optional Hydra configuration for column type definitions.
     """
 
-    def __init__(
-        self,
-        duckdb_client: DuckDBClient,
-        config: DictConfig | None = None,
-    ) -> None:
-        self._duckdb = duckdb_client
+    def __init__(self, config: "DictConfig | None" = None) -> None:
         self._config = config
 
     def _transform_dataframe(
@@ -40,7 +31,7 @@ class ExtractorService:
         """Transform DataFrame according to column configurations.
 
         Args:
-            df: Input DataFrame from DuckDB.
+            df: Input DataFrame.
             columns_config: Column configuration list from Hydra config.
 
         Returns:
@@ -58,7 +49,6 @@ class ExtractorService:
             col_dtype = df[csv_name].dtype
 
             if dtype == "Datetime":
-                # If already datetime, just rename; otherwise parse from string
                 if col_dtype == pl.Datetime or str(col_dtype).startswith("Datetime"):
                     expr = pl.col(csv_name).alias(target_name)
                 else:
@@ -91,36 +81,22 @@ class ExtractorService:
 
         return df.select(expressions)
 
-    def extract(
-        self,
-        bucket: str,
-        object_name: str,
-        data_type: str,
-    ) -> pl.DataFrame:
-        """Extract data from S3 CSV file using DuckDB.
-
-        DuckDB reads CSV directly from S3, then transforms according to Hydra config.
+    def transform(self, df: pl.DataFrame, data_type: str) -> pl.DataFrame:
+        """Transform validated DataFrame with type conversions.
 
         Args:
-            bucket: S3 bucket name.
-            object_name: CSV file object name.
+            df: Validated DataFrame from ValidatorService.
             data_type: Data type name (e.g., "asset", "trade").
 
         Returns:
-            Polars DataFrame with extracted data.
+            Transformed DataFrame with proper types.
         """
-        config = DataTypeRegistry.get(data_type)
-        logger.info(f"Extracting {data_type} from s3://{bucket}/{object_name}")
+        logger.info(f"Transforming {len(df)} {data_type} records")
 
-        # DuckDB reads CSV directly from S3
-        self._duckdb.load_csv_from_s3(bucket, object_name, config.raw_table_name)
-        df = self._duckdb.query(f"SELECT * FROM {config.raw_table_name}")
-
-        # Apply Hydra config transformations if available
         config_attr = f"{data_type}s"  # e.g., "assets", "trades"
         if self._config is not None and hasattr(self._config, config_attr):
             type_config = getattr(self._config, config_attr)
             df = self._transform_dataframe(df, type_config.columns)
 
-        logger.info(f"Extracted {len(df)} {data_type} records")
+        logger.info(f"Transformed {len(df)} {data_type} records")
         return df

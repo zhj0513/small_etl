@@ -43,14 +43,14 @@ class DataTypeConfig:
     foreign_key_reference: str | None = None
     statistics_config: dict[str, Any] = field(default_factory=dict)
 
-    def get_db_schema(self) -> dict[str, pl.DataType]:
+    def get_db_schema(self) -> dict[str, type[pl.DataType]]:
         """Get Polars schema for empty DataFrame creation.
 
         Returns:
             Dictionary mapping column names to Polars data types.
         """
         # Default schema based on common column patterns
-        schema: dict[str, pl.DataType] = {}
+        schema: dict[str, type[pl.DataType]] = {}
         for col in self.db_columns:
             if col == "id":
                 schema[col] = pl.Int64

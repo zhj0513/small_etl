@@ -179,11 +179,15 @@ class TestPrintResult:
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
+            assets_loaded=100,
+            trades_loaded=500,
         )
         print_result(result)
 
         captured = capsys.readouterr()
         assert "SUCCESS" in captured.out
+        assert "Assets loaded: 100" in captured.out
+        assert "Trades loaded: 500" in captured.out
 
     def test_print_result_failure(self, capsys):
         """Test printing failed result."""
@@ -201,88 +205,38 @@ class TestPrintResult:
         assert "FAILED" in captured.out
         assert "Test error" in captured.out
 
-    def test_print_result_with_validation(self, capsys):
-        """Test printing result with validation info."""
-        from small_etl.application.pipeline import DataTypeResult, PipelineResult
-        from small_etl.services.validator import ValidationResult
-
-        import polars as pl
-
-        validation = ValidationResult(
-            is_valid=True,
-            valid_rows=pl.DataFrame(),
-            invalid_rows=pl.DataFrame(),
-            errors=[],
-            total_rows=100,
-            valid_count=95,
-            invalid_count=5,
-        )
+    def test_print_result_with_assets_only(self, capsys):
+        """Test printing result with only assets loaded."""
+        from small_etl.application.pipeline import PipelineResult
 
         result = PipelineResult(
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            results={"asset": DataTypeResult(data_type="asset", validation=validation)},
+            assets_loaded=100,
         )
         print_result(result)
 
         captured = capsys.readouterr()
-        assert "Asset" in captured.out
-        assert "Total=100" in captured.out
-        assert "Valid=95" in captured.out
-        assert "Invalid=5" in captured.out
+        assert "SUCCESS" in captured.out
+        assert "Assets loaded: 100" in captured.out
+        assert "Trades loaded" not in captured.out
 
-    def test_print_result_with_multiple_data_types(self, capsys):
-        """Test printing result with multiple data types."""
-        from small_etl.application.pipeline import DataTypeResult, PipelineResult
-        from small_etl.services.loader import LoadResult
-        from small_etl.services.validator import ValidationResult
-
-        import polars as pl
-
-        asset_validation = ValidationResult(
-            is_valid=True,
-            valid_rows=pl.DataFrame(),
-            invalid_rows=pl.DataFrame(),
-            errors=[],
-            total_rows=100,
-            valid_count=100,
-            invalid_count=0,
-        )
-        trade_validation = ValidationResult(
-            is_valid=True,
-            valid_rows=pl.DataFrame(),
-            invalid_rows=pl.DataFrame(),
-            errors=[],
-            total_rows=500,
-            valid_count=495,
-            invalid_count=5,
-        )
+    def test_print_result_no_loaded_counts(self, capsys):
+        """Test printing result with no loaded counts."""
+        from small_etl.application.pipeline import PipelineResult
 
         result = PipelineResult(
             success=True,
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            results={
-                "asset": DataTypeResult(
-                    data_type="asset",
-                    validation=asset_validation,
-                    load=LoadResult(success=True, total_rows=100, loaded_count=100),
-                ),
-                "trade": DataTypeResult(
-                    data_type="trade",
-                    validation=trade_validation,
-                    load=LoadResult(success=True, total_rows=495, loaded_count=495),
-                ),
-            },
         )
         print_result(result)
 
         captured = capsys.readouterr()
-        assert "Asset" in captured.out
-        assert "Trade" in captured.out
-        assert "100 loaded" in captured.out
-        assert "495 loaded" in captured.out
+        assert "SUCCESS" in captured.out
+        assert "Assets loaded" not in captured.out
+        assert "Trades loaded" not in captured.out
 
 
 class TestRunClean:
@@ -454,13 +408,11 @@ class TestRunPipeline:
 
         mock_result = MagicMock()
         mock_result.success = True
-        mock_result.assets_validation = None
-        mock_result.trades_validation = None
         mock_result.started_at = datetime.now(UTC)
         mock_result.completed_at = datetime.now(UTC)
-        mock_result.assets_load = None
-        mock_result.trades_load = None
         mock_result.error_message = None
+        mock_result.assets_loaded = 100
+        mock_result.trades_loaded = 500
 
         mock_pipeline = MagicMock()
         mock_pipeline.run.return_value = mock_result
@@ -482,10 +434,8 @@ class TestRunPipeline:
         mock_result.error_message = "Pipeline failed"
         mock_result.started_at = datetime.now(UTC)
         mock_result.completed_at = datetime.now(UTC)
-        mock_result.assets_validation = None
-        mock_result.trades_validation = None
-        mock_result.assets_load = None
-        mock_result.trades_load = None
+        mock_result.assets_loaded = 0
+        mock_result.trades_loaded = 0
 
         mock_pipeline = MagicMock()
         mock_pipeline.run.return_value = mock_result

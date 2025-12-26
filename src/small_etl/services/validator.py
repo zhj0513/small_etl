@@ -1,32 +1,20 @@
-"""Validator service for data validation using Pandera schemas."""
+"""Validator service for reading S3 CSV and validating data using Pandera schemas."""
+
+from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import pandera.errors
-import pandera.polars as pa
 import polars as pl
 
 from small_etl.domain.registry import DataTypeRegistry
 
+if TYPE_CHECKING:
+    from omegaconf import DictConfig
+
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ValidationError:
-    """Represents a single validation error.
-
-    Attributes:
-        row_index: Index of the row with error.
-        field: Field name where error occurred.
-        message: Error description.
-        value: The invalid value.
-    """
-
-    row_index: int
-    field: str
-    message: str
-    value: str | None = None
 
 
 @dataclass
@@ -34,173 +22,110 @@ class ValidationResult:
     """Result of data validation.
 
     Attributes:
-        is_valid: True if all rows passed validation.
-        valid_rows: DataFrame containing valid rows.
-        invalid_rows: DataFrame containing invalid rows.
-        errors: List of validation errors.
-        total_rows: Total number of rows validated.
-        valid_count: Number of valid rows.
-        invalid_count: Number of invalid rows.
+        is_valid: True if validation passed.
+        data: Validated DataFrame (empty if validation failed).
+        error_message: Error description if validation failed.
     """
 
     is_valid: bool
-    valid_rows: pl.DataFrame
-    invalid_rows: pl.DataFrame
-    errors: list[ValidationError] = field(default_factory=list)
-    total_rows: int = 0
-    valid_count: int = 0
-    invalid_count: int = 0
+    data: pl.DataFrame
+    error_message: str | None = None
 
 
 class ValidatorService:
-    """Service for validating asset and trade data using Pandera schemas.
+    """Service for reading S3 CSV and validating data using Pandera schemas.
 
     Args:
         tolerance: Tolerance for calculated field comparisons (default: 0.01).
-                   Note: Currently not used as schemas use DEFAULT_TOLERANCE.
+        s3_config: S3 configuration for reading CSV files.
     """
 
-    def __init__(self, tolerance: float = 0.01) -> None:
+    def __init__(self, tolerance: float = 0.01, s3_config: "DictConfig | None" = None) -> None:
         self._tolerance = tolerance
+        self._s3_config = s3_config
+        self._storage_options: dict[str, Any] | None = None
 
-    def _parse_pandera_errors(
-        self, schema_errors: pandera.errors.SchemaErrors
-    ) -> tuple[list[ValidationError], set[int]]:
-        """Parse Pandera SchemaErrors into ValidationError list.
+        if s3_config is not None:
+            secure = getattr(s3_config, "secure", False)
+            protocol = "https" if secure else "http"
+            self._storage_options = {
+                "key": s3_config.access_key,
+                "secret": s3_config.secret_key,
+                "client_kwargs": {"endpoint_url": f"{protocol}://{s3_config.endpoint}"},
+            }
+            logger.info(f"ValidatorService: S3 configured with endpoint: {s3_config.endpoint}")
+
+    def read_csv_from_s3(self, bucket: str, object_name: str, data_type: str) -> pl.DataFrame:
+        """Read CSV file from S3/MinIO using Polars.
+
+        Args:
+            bucket: S3 bucket name.
+            object_name: CSV file object name/path.
+            data_type: Data type name for logging.
+
+        Returns:
+            Polars DataFrame from CSV.
+
+        Raises:
+            RuntimeError: If S3 is not configured.
+        """
+        if self._storage_options is None:
+            raise RuntimeError("S3 not configured. Pass s3_config to ValidatorService constructor.")
+
+        s3_path = f"s3://{bucket}/{object_name}"
+        logger.info(f"Reading {data_type} CSV from {s3_path}")
+
+        df = pl.read_csv(s3_path, storage_options=self._storage_options)
+        logger.info(f"Read {len(df)} {data_type} records from S3")
+        return df
+
+    def fetch_and_validate(
+        self,
+        bucket: str,
+        object_name: str,
+        data_type: str,
+        valid_foreign_keys: set[str] | None = None,
+    ) -> ValidationResult:
+        """Read CSV from S3 and validate in one step.
+
+        Args:
+            bucket: S3 bucket name.
+            object_name: CSV file object name/path.
+            data_type: Data type name (e.g., "asset", "trade").
+            valid_foreign_keys: Optional set of valid foreign key values.
+
+        Returns:
+            ValidationResult with data if valid, error message if not.
+        """
+        raw_df = self.read_csv_from_s3(bucket, object_name, data_type)
+        return self.validate(raw_df, data_type, valid_foreign_keys)
+
+    def _format_error_message(self, schema_errors: pandera.errors.SchemaErrors) -> str:
+        """Format Pandera SchemaErrors into a readable error message.
 
         Args:
             schema_errors: Pandera schema validation errors.
 
         Returns:
-            Tuple of (list of ValidationError, set of invalid row indices).
+            Formatted error message string.
         """
-        errors: list[ValidationError] = []
-        invalid_indices: set[int] = set()
-
-        # failure_cases is a DataFrame with columns: schema_context, column, check, check_number, failure_case, index
         failure_cases = schema_errors.failure_cases
         if failure_cases is None or len(failure_cases) == 0:
-            return errors, invalid_indices
+            return "Validation failed with unknown error"
 
-        for row in failure_cases.iter_rows(named=True):
-            row_idx = row.get("index")
-            column = row.get("column")
-            check = row.get("check")
-            failure_case = row.get("failure_case")
-            schema_context = row.get("schema_context")
+        errors = []
+        for row in failure_cases.head(5).iter_rows(named=True):
+            row_idx = row.get("index", "N/A")
+            column = row.get("column", "unknown")
+            check = row.get("check", "unknown")
+            failure_case = row.get("failure_case", "N/A")
+            errors.append(f"Row {row_idx}, column '{column}': {check} (value: {failure_case})")
 
-            # For dataframe-level checks, extract field name from check name
-            # e.g., "total_asset_equals_sum" -> "total_asset"
-            # e.g., "traded_amount_equals_product" -> "traded_amount"
-            field = str(column) if column is not None else "unknown"
-            if schema_context == "DataFrameSchema" and check:
-                # Extract first part of check name as field name
-                check_str = str(check)
-                if "_equals_" in check_str:
-                    field = check_str.split("_equals_")[0]
-                elif "_" in check_str:
-                    field = check_str.split("_")[0]
+        total_errors = len(failure_cases)
+        if total_errors > 5:
+            errors.append(f"... and {total_errors - 5} more errors")
 
-            if row_idx is not None:
-                invalid_indices.add(int(row_idx))
-                errors.append(
-                    ValidationError(
-                        row_index=int(row_idx),
-                        field=field,
-                        message=f"Failed check: {check}",
-                        value=str(failure_case) if failure_case is not None else None,
-                    )
-                )
-            else:
-                # DataFrame-level check failure without row index
-                errors.append(
-                    ValidationError(
-                        row_index=-1,
-                        field=field,
-                        message=f"Failed check: {check}",
-                        value=str(failure_case) if failure_case is not None else None,
-                    )
-                )
-
-        return errors, invalid_indices
-
-    def _validate_with_schema(
-        self,
-        df: pl.DataFrame,
-        schema: type[pa.DataFrameModel],
-        data_type: str,
-    ) -> ValidationResult:
-        """Validate DataFrame using a Pandera schema.
-
-        Args:
-            df: DataFrame to validate.
-            schema: Pandera DataFrameModel class.
-            data_type: Type of data being validated (for logging).
-
-        Returns:
-            ValidationResult with valid/invalid rows and errors.
-        """
-        logger.info(f"Validating {len(df)} {data_type} records with Pandera")
-        total_rows = len(df)
-
-        if total_rows == 0:
-            return ValidationResult(
-                is_valid=True,
-                valid_rows=df,
-                invalid_rows=df.clear(),
-                errors=[],
-                total_rows=0,
-                valid_count=0,
-                invalid_count=0,
-            )
-
-        # Add original row index before validation
-        df_with_index = df.with_row_index("_original_index")
-
-        try:
-            # lazy=True collects all errors instead of failing on first
-            schema.validate(df_with_index, lazy=True)
-            # All rows passed validation
-            logger.info(f"Validation complete: {total_rows} valid, 0 invalid")
-            return ValidationResult(
-                is_valid=True,
-                valid_rows=df,
-                invalid_rows=df.clear(),
-                errors=[],
-                total_rows=total_rows,
-                valid_count=total_rows,
-                invalid_count=0,
-            )
-        except pandera.errors.SchemaErrors as e:
-            # Parse errors and separate valid/invalid rows
-            errors, invalid_indices = self._parse_pandera_errors(e)
-
-            if invalid_indices:
-                valid_rows = df_with_index.filter(~pl.col("_original_index").is_in(list(invalid_indices))).drop(
-                    "_original_index"
-                )
-                invalid_rows = df_with_index.filter(pl.col("_original_index").is_in(list(invalid_indices))).drop(
-                    "_original_index"
-                )
-            else:
-                # DataFrame-level check failed but no row-level indices
-                # Mark all rows as invalid for safety
-                valid_rows = df.clear()
-                invalid_rows = df
-
-            valid_count = len(valid_rows)
-            invalid_count = len(invalid_rows)
-
-            logger.info(f"Validation complete: {valid_count} valid, {invalid_count} invalid")
-            return ValidationResult(
-                is_valid=False,
-                valid_rows=valid_rows,
-                invalid_rows=invalid_rows,
-                errors=errors,
-                total_rows=total_rows,
-                valid_count=valid_count,
-                invalid_count=invalid_count,
-            )
+        return "; ".join(errors)
 
     def validate(
         self,
@@ -210,111 +135,48 @@ class ValidatorService:
     ) -> ValidationResult:
         """Validate data using the registered schema for the data type.
 
-        Generic method that uses DataTypeRegistry for configuration.
-
         Args:
             df: DataFrame to validate.
             data_type: Data type name (e.g., "asset", "trade").
             valid_foreign_keys: Optional set of valid foreign key values.
 
         Returns:
-            ValidationResult with valid/invalid rows and errors.
+            ValidationResult with data if valid, error message if not.
         """
         config = DataTypeRegistry.get(data_type)
 
         if config.schema_class is None:
             raise ValueError(f"No schema registered for data type: {data_type}")
 
-        # Validate with Pandera schema
-        result = self._validate_with_schema(df, config.schema_class, data_type)
+        logger.info(f"Validating {len(df)} {data_type} records with Pandera")
 
-        # Apply foreign key validation if configured and keys provided
-        if config.foreign_key_column and valid_foreign_keys and result.valid_count > 0:
-            result = self._validate_foreign_keys(
-                result, valid_foreign_keys, config.foreign_key_column
-            )
+        if len(df) == 0:
+            return ValidationResult(is_valid=True, data=df)
 
-        return result
+        try:
+            config.schema_class.validate(df, lazy=True)
+        except pandera.errors.SchemaErrors as e:
+            error_msg = self._format_error_message(e)
+            logger.error(f"{data_type} validation failed: {error_msg}")
+            return ValidationResult(is_valid=False, data=df.clear(), error_message=error_msg)
+
+        # Foreign key validation
+        if config.foreign_key_column and valid_foreign_keys:
+            fk_column = config.foreign_key_column
+            invalid_fks = df.filter(~pl.col(fk_column).cast(pl.Utf8).is_in(list(valid_foreign_keys)))
+            if len(invalid_fks) > 0:
+                invalid_values = invalid_fks[fk_column].unique().to_list()[:5]
+                error_msg = f"Foreign key validation failed: {fk_column} values {invalid_values} not found in asset table"
+                logger.error(f"{data_type} validation failed: {error_msg}")
+                return ValidationResult(is_valid=False, data=df.clear(), error_message=error_msg)
+
+        logger.info(f"{data_type} validation passed: {len(df)} records")
+        return ValidationResult(is_valid=True, data=df)
 
     def validate_assets(self, df: pl.DataFrame) -> ValidationResult:
-        """Validate asset data using Pandera AssetSchema.
-
-        Convenience method that delegates to generic validate().
-
-        Args:
-            df: DataFrame with asset data.
-
-        Returns:
-            ValidationResult with valid/invalid rows and errors.
-        """
+        """Validate asset data using Pandera AssetSchema."""
         return self.validate(df, "asset")
 
     def validate_trades(self, df: pl.DataFrame, valid_account_ids: set[str] | None = None) -> ValidationResult:
-        """Validate trade data using Pandera TradeSchema.
-
-        Convenience method that delegates to generic validate().
-
-        Args:
-            df: DataFrame with trade data.
-            valid_account_ids: Optional set of valid account IDs for foreign key validation.
-
-        Returns:
-            ValidationResult with valid/invalid rows and errors.
-        """
+        """Validate trade data using Pandera TradeSchema."""
         return self.validate(df, "trade", valid_account_ids)
-
-    def _validate_foreign_keys(
-        self,
-        result: ValidationResult,
-        valid_keys: set[str],
-        fk_column: str = "account_id",
-    ) -> ValidationResult:
-        """Validate foreign key constraints on valid rows.
-
-        Args:
-            result: Current validation result.
-            valid_keys: Set of valid foreign key values.
-            fk_column: Name of the foreign key column.
-
-        Returns:
-            Updated ValidationResult with foreign key validation applied.
-        """
-        valid_rows = result.valid_rows
-        if len(valid_rows) == 0:
-            return result
-
-        # Add index for tracking
-        valid_rows_indexed = valid_rows.with_row_index("_fk_index")
-
-        # Find rows with invalid foreign keys
-        fk_valid_mask = valid_rows_indexed[fk_column].cast(pl.Utf8).is_in(list(valid_keys))
-        invalid_fk_rows = valid_rows_indexed.filter(~fk_valid_mask)
-
-        if len(invalid_fk_rows) == 0:
-            return result
-
-        # Create errors for foreign key violations
-        fk_errors: list[ValidationError] = []
-        for row in invalid_fk_rows.iter_rows(named=True):
-            fk_errors.append(
-                ValidationError(
-                    row_index=int(row["_fk_index"]),
-                    field=fk_column,
-                    message=f"{fk_column} not found in asset table: {row.get(fk_column)}",
-                    value=str(row.get(fk_column)),
-                )
-            )
-
-        # Update valid/invalid rows
-        new_valid_rows = valid_rows_indexed.filter(fk_valid_mask).drop("_fk_index")
-        new_invalid_rows = pl.concat([result.invalid_rows, invalid_fk_rows.drop("_fk_index")])
-
-        return ValidationResult(
-            is_valid=len(new_valid_rows) == result.total_rows,
-            valid_rows=new_valid_rows,
-            invalid_rows=new_invalid_rows,
-            errors=result.errors + fk_errors,
-            total_rows=result.total_rows,
-            valid_count=len(new_valid_rows),
-            invalid_count=len(new_invalid_rows),
-        )

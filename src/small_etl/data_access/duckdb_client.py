@@ -1,75 +1,24 @@
-"""DuckDB client for in-memory data validation."""
+"""DuckDB client for in-memory data operations and PostgreSQL integration."""
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import duckdb
 import polars as pl
-
-if TYPE_CHECKING:
-    from omegaconf import DictConfig
 
 logger = logging.getLogger(__name__)
 
 
 class DuckDBClient:
-    """DuckDB client for in-memory data operations.
+    """DuckDB client for in-memory data operations and PostgreSQL access.
 
-    Uses DuckDB's in-memory mode for fast data validation
-    and transformation operations.
+    Uses DuckDB's in-memory mode and postgres extension for fast data operations.
     """
 
-    def __init__(self, s3_config: "DictConfig | None" = None) -> None:
+    def __init__(self) -> None:
         self._conn = duckdb.connect(":memory:")
         self._pg_attached = False
-        self._s3_configured = False
-
-        if s3_config is not None:
-            self._configure_s3(s3_config)
-
         logger.info("DuckDBClient initialized with in-memory database")
-
-    def _configure_s3(self, s3_config: "DictConfig") -> None:
-        """Configure DuckDB to access S3/MinIO.
-
-        Args:
-            s3_config: S3 configuration from Hydra.
-        """
-        self._conn.execute("INSTALL httpfs")
-        self._conn.execute("LOAD httpfs")
-
-        endpoint = s3_config.endpoint
-        access_key = s3_config.access_key
-        secret_key = s3_config.secret_key
-        secure = getattr(s3_config, "secure", False)
-
-        self._conn.execute(f"SET s3_endpoint='{endpoint}'")
-        self._conn.execute(f"SET s3_access_key_id='{access_key}'")
-        self._conn.execute(f"SET s3_secret_access_key='{secret_key}'")
-        self._conn.execute(f"SET s3_use_ssl={str(secure).lower()}")
-        self._conn.execute("SET s3_url_style='path'")
-
-        self._s3_configured = True
-        logger.info(f"DuckDB S3 configured with endpoint: {endpoint}")
-
-    def load_csv_from_s3(self, bucket: str, object_name: str, table_name: str) -> None:
-        """Load CSV data from S3 directly into a DuckDB table.
-
-        Args:
-            bucket: S3 bucket name.
-            object_name: CSV file object name/path.
-            table_name: Name for the created table.
-
-        Raises:
-            RuntimeError: If S3 is not configured.
-        """
-        if not self._s3_configured:
-            raise RuntimeError("S3 not configured. Pass s3_config to DuckDBClient constructor.")
-
-        s3_path = f"s3://{bucket}/{object_name}"
-        self._conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-        self._conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_csv_auto('{s3_path}', header=true, timestampformat='%Y-%m-%dT%H:%M:%S')")
-        logger.info(f"Loaded CSV from {s3_path} into table '{table_name}'")
 
     def attach_postgres(self, database_url: str) -> None:
         """Attach PostgreSQL database using DuckDB postgres extension.
@@ -80,11 +29,8 @@ class DuckDBClient:
         if self._pg_attached:
             return
 
-        # Install and load postgres extension
         self._conn.execute("INSTALL postgres")
         self._conn.execute("LOAD postgres")
-
-        # Attach PostgreSQL database
         self._conn.execute(f"ATTACH '{database_url}' AS pg (TYPE POSTGRES)")
         self._pg_attached = True
         logger.info("PostgreSQL database attached via DuckDB postgres extension")
@@ -93,7 +39,6 @@ class DuckDBClient:
         """Upsert DataFrame to PostgreSQL table using DuckDB postgres extension.
 
         Uses UPDATE + INSERT pattern to handle foreign key constraints properly.
-        First updates existing rows, then inserts new rows.
 
         Args:
             df: Polars DataFrame to upsert.
@@ -109,15 +54,12 @@ class DuckDBClient:
         if not self._pg_attached:
             raise RuntimeError("PostgreSQL not attached. Call attach_postgres() first.")
 
-        # Register DataFrame as a DuckDB table
         temp_table = f"_temp_{table_name}"
         self._conn.register(temp_table, df.to_arrow())
 
-        # Build column list
         columns = df.columns
         update_columns = [c for c in columns if c != conflict_column]
 
-        # Update existing rows
         if update_columns:
             set_clause = ", ".join([f"{c} = t.\"{c}\"" for c in update_columns])
             update_sql = f"""
@@ -128,7 +70,6 @@ class DuckDBClient:
             """
             self._conn.execute(update_sql)
 
-        # Insert new rows (those not already in the table)
         columns_str = ", ".join(columns)
         values_str = ", ".join([f'"{c}"' for c in columns])
         insert_sql = f"""
@@ -140,8 +81,6 @@ class DuckDBClient:
             )
         """
         self._conn.execute(insert_sql)
-
-        # Unregister temp table
         self._conn.unregister(temp_table)
 
         row_count = len(df)
@@ -165,14 +104,10 @@ class DuckDBClient:
 
         Returns:
             Dictionary with aggregated asset statistics.
-
-        Raises:
-            RuntimeError: If PostgreSQL is not attached.
         """
         if not self._pg_attached:
             raise RuntimeError("PostgreSQL not attached. Call attach_postgres() first.")
 
-        # Overall statistics
         overall_sql = """
             SELECT
                 COUNT(*) as total_records,
@@ -197,7 +132,6 @@ class DuckDBClient:
                 "by_account_type": {},
             }
 
-        # Statistics by account type
         by_type_sql = """
             SELECT
                 account_type,
@@ -238,14 +172,10 @@ class DuckDBClient:
 
         Returns:
             Dictionary with aggregated trade statistics.
-
-        Raises:
-            RuntimeError: If PostgreSQL is not attached.
         """
         if not self._pg_attached:
             raise RuntimeError("PostgreSQL not attached. Call attach_postgres() first.")
 
-        # Overall statistics
         overall_sql = """
             SELECT
                 COUNT(*) as total_records,
@@ -268,7 +198,6 @@ class DuckDBClient:
                 "by_strategy": {},
             }
 
-        # Statistics by account type
         by_type_sql = """
             SELECT
                 account_type,
@@ -289,7 +218,6 @@ class DuckDBClient:
                 "sum_amount": row[3],
             }
 
-        # Statistics by offset flag
         by_flag_sql = """
             SELECT
                 offset_flag,
@@ -310,7 +238,6 @@ class DuckDBClient:
                 "sum_amount": row[3],
             }
 
-        # Statistics by strategy
         by_strategy_sql = """
             SELECT
                 strategy_name,

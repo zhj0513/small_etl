@@ -1,11 +1,8 @@
 """Additional tests for validator to improve coverage."""
 
 from datetime import datetime
-from decimal import Decimal
-from unittest.mock import MagicMock
 
 import polars as pl
-import pytest
 
 from small_etl.services.validator import ValidatorService
 
@@ -40,9 +37,8 @@ class TestValidatorServiceEdgeCases:
         valid_account_ids = {"10000000001", "10000000002"}
         result = service.validate_trades(df, valid_account_ids)
 
-        # All rows should be valid since account_id is in valid_account_ids
-        assert result.valid_count == 1
-        assert result.invalid_count == 0
+        assert result.is_valid is True
+        assert len(result.data) == 1
 
     def test_validate_trades_with_fk_invalid(self):
         """Test validate_trades when foreign key is invalid."""
@@ -71,15 +67,13 @@ class TestValidatorServiceEdgeCases:
         valid_account_ids = {"10000000001", "10000000002"}
         result = service.validate_trades(df, valid_account_ids)
 
-        # Row should be invalid due to foreign key violation
-        assert result.invalid_count == 1
-        assert any("account_id not found" in e.message for e in result.errors)
+        assert result.is_valid is False
+        assert "account_id" in result.error_message
 
     def test_validate_empty_dataframe(self):
         """Test validation of empty DataFrame."""
         service = ValidatorService()
 
-        # Create empty assets DataFrame
         df = pl.DataFrame(
             schema={
                 "id": pl.Int64,
@@ -96,33 +90,34 @@ class TestValidatorServiceEdgeCases:
         result = service.validate_assets(df)
 
         assert result.is_valid is True
-        assert result.total_rows == 0
-        assert result.valid_count == 0
-        assert result.invalid_count == 0
+        assert len(result.data) == 0
 
-    def test_validate_fk_empty_valid_rows(self):
-        """Test _validate_foreign_keys with empty valid rows."""
-        from small_etl.services.validator import ValidationResult
-
+    def test_validate_trades_without_fk_validation(self):
+        """Test validate_trades without foreign key set."""
         service = ValidatorService()
 
-        # Create empty result
-        empty_df = pl.DataFrame(
-            schema={
-                "account_id": pl.Utf8,
-                "traded_id": pl.Utf8,
+        df = pl.DataFrame(
+            {
+                "id": [1],
+                "account_id": ["10000000001"],
+                "account_type": [1],
+                "traded_id": ["T001"],
+                "stock_code": ["600000"],
+                "traded_time": [datetime(2025, 12, 22, 10, 30, 0)],
+                "traded_price": [15.50],
+                "traded_volume": [1000],
+                "traded_amount": [15500.00],
+                "strategy_name": ["策略A"],
+                "order_remark": ["正常交易"],
+                "direction": [0],
+                "offset_flag": [48],
+                "created_at": [datetime(2025, 12, 22, 10, 30, 0)],
+                "updated_at": [datetime(2025, 12, 22, 14, 30, 0)],
             }
         )
-        result = ValidationResult(
-            is_valid=False,
-            valid_rows=empty_df,
-            invalid_rows=empty_df,
-            errors=[],
-            total_rows=0,
-            valid_count=0,
-            invalid_count=0,
-        )
 
-        # Should return unchanged result
-        new_result = service._validate_foreign_keys(result, {"001", "002"})
-        assert new_result == result
+        # No FK validation when valid_account_ids is None
+        result = service.validate_trades(df, None)
+
+        assert result.is_valid is True
+        assert len(result.data) == 1

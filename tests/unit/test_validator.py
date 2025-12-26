@@ -22,19 +22,16 @@ class TestValidatorService:
         result = validator.validate_assets(sample_asset_data)
 
         assert result.is_valid is True
-        assert result.valid_count == 3
-        assert result.invalid_count == 0
-        assert len(result.errors) == 0
-        assert len(result.valid_rows) == 3
-        assert len(result.invalid_rows) == 0
+        assert result.error_message is None
+        assert len(result.data) == 3
 
     def test_validate_invalid_assets(self, validator: ValidatorService, invalid_asset_data: pl.DataFrame) -> None:
         """Test validation catches invalid asset data."""
         result = validator.validate_assets(invalid_asset_data)
 
         assert result.is_valid is False
-        assert result.invalid_count > 0
-        assert len(result.errors) > 0
+        assert result.error_message is not None
+        assert len(result.data) == 0
 
     def test_validate_asset_total_mismatch(self, validator: ValidatorService) -> None:
         """Test validation catches total_asset calculation mismatch."""
@@ -54,8 +51,7 @@ class TestValidatorService:
         result = validator.validate_assets(df)
 
         assert result.is_valid is False
-        assert result.invalid_count == 1
-        assert any("total_asset" in e.field for e in result.errors)
+        assert result.error_message is not None
 
     def test_validate_asset_within_tolerance(self, validator: ValidatorService) -> None:
         """Test validation allows total_asset within tolerance."""
@@ -82,8 +78,7 @@ class TestValidatorService:
         result = validator.validate_trades(sample_trade_data, valid_account_ids)
 
         assert result.is_valid is True
-        assert result.valid_count == 3
-        assert result.invalid_count == 0
+        assert len(result.data) == 3
 
     def test_validate_invalid_trades(self, validator: ValidatorService, invalid_trade_data: pl.DataFrame) -> None:
         """Test validation catches invalid trade data."""
@@ -91,8 +86,7 @@ class TestValidatorService:
         result = validator.validate_trades(invalid_trade_data, valid_account_ids)
 
         assert result.is_valid is False
-        assert result.invalid_count > 0
-        assert len(result.errors) > 0
+        assert result.error_message is not None
 
     def test_validate_trade_foreign_key(self, validator: ValidatorService, sample_trade_data: pl.DataFrame) -> None:
         """Test validation catches missing account_id reference."""
@@ -100,7 +94,7 @@ class TestValidatorService:
         result = validator.validate_trades(sample_trade_data, valid_account_ids)
 
         assert result.is_valid is False
-        assert any("account_id" in e.field and "not found" in e.message for e in result.errors)
+        assert "account_id" in result.error_message
 
     def test_validate_trade_amount_mismatch(self, validator: ValidatorService) -> None:
         """Test validation catches traded_amount calculation mismatch."""
@@ -128,7 +122,7 @@ class TestValidatorService:
         result = validator.validate_trades(df, valid_account_ids)
 
         assert result.is_valid is False
-        assert any("traded_amount" in e.field for e in result.errors)
+        assert result.error_message is not None
 
     def test_validate_empty_dataframe(self, validator: ValidatorService) -> None:
         """Test validation of empty DataFrame."""
@@ -159,5 +153,4 @@ class TestValidatorService:
         result = validator.validate_assets(empty_df)
 
         assert result.is_valid is True
-        assert result.total_rows == 0
-        assert result.valid_count == 0
+        assert len(result.data) == 0
