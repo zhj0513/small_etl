@@ -94,7 +94,10 @@ class ETLPipeline:
         self._repo = PostgresRepository(config.db.url, echo=echo)
 
         self._validator = ValidatorService(s3_config=config.s3)
-        self._extractor = ExtractorService(config=getattr(config, "extractor", None))
+        self._extractor = ExtractorService(
+            config=getattr(config, "extractor", None),
+            duckdb_client=self._duckdb,
+        )
         self._loader = LoaderService(
             repository=self._repo,
             duckdb_client=self._duckdb,
@@ -215,13 +218,16 @@ class ETLPipeline:
                 error_message=f"Validation failed: {validation.error_message}",
             )
 
-        # Phase 2: Extract And Transform
+        # Phase 2: Extract And Transform (using DuckDB)
         logger.info(f"  Transforming {data_type}...")
-        df = self._extractor.transform(validation.data, data_type)
+        transformed_table = self._extractor.transform(validation.data, data_type)
 
-        # Phase 3: Load
+        # Phase 3: Load (from DuckDB table)
         logger.info(f"  Loading {data_type}...")
-        load_result = self._loader.load(df, data_type, batch_size=self._config.etl.batch_size)
+        load_result = self._loader.load(transformed_table, data_type)
+
+        # Clean up transformed table
+        self._duckdb.drop_table(transformed_table)
 
         if not load_result.success:
             return StepResult(

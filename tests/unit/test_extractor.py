@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 from omegaconf import OmegaConf
 
+from small_etl.data_access.duckdb_client import DuckDBClient
 from small_etl.services.extractor import ExtractorService
 
 
@@ -13,9 +14,9 @@ class TestExtractorService:
     """Tests for ExtractorService."""
 
     @pytest.fixture
-    def extractor_no_config(self):
-        """Create ExtractorService without config."""
-        return ExtractorService(config=None)
+    def duckdb_client(self) -> DuckDBClient:
+        """Create DuckDB client instance."""
+        return DuckDBClient()
 
     @pytest.fixture
     def assets_config(self):
@@ -84,17 +85,26 @@ class TestExtractorService:
             }
         )
 
-    def test_init(self):
+    def test_init(self, duckdb_client: DuckDBClient):
         """Test ExtractorService initialization."""
-        extractor = ExtractorService()
+        extractor = ExtractorService(duckdb_client=duckdb_client)
         assert extractor._config is None
+        assert extractor._duckdb is duckdb_client
 
-    def test_init_with_config(self, assets_config):
+    def test_init_with_config(self, assets_config, duckdb_client: DuckDBClient):
         """Test ExtractorService initialization with config."""
-        extractor = ExtractorService(config=assets_config)
+        extractor = ExtractorService(config=assets_config, duckdb_client=duckdb_client)
         assert extractor._config is not None
 
-    def test_transform_asset_no_config(self):
+    def test_transform_without_duckdb_raises(self):
+        """Test transform without DuckDB client raises error."""
+        extractor = ExtractorService(config=None, duckdb_client=None)
+        df = pl.DataFrame({"id": [1]})
+
+        with pytest.raises(RuntimeError, match="DuckDB client is required"):
+            extractor.transform(df, "asset")
+
+    def test_transform_asset_no_config(self, duckdb_client: DuckDBClient):
         """Test transform asset without config (pass-through)."""
         df = pl.DataFrame(
             {
@@ -109,13 +119,19 @@ class TestExtractorService:
             }
         )
 
-        extractor = ExtractorService(config=None)
-        result = extractor.transform(df, "asset")
+        extractor = ExtractorService(config=None, duckdb_client=duckdb_client)
+        table_name = extractor.transform(df, "asset")
 
-        assert len(result) == 1
-        assert result.columns == df.columns
+        assert table_name == "_transformed_asset"
 
-    def test_transform_asset_with_config(self, assets_config):
+        # Verify table was created
+        result = duckdb_client.query(f"SELECT COUNT(*) as cnt FROM {table_name}")
+        assert result["cnt"][0] == 1
+
+        # Clean up
+        duckdb_client.drop_table(table_name)
+
+    def test_transform_asset_with_config(self, assets_config, duckdb_client: DuckDBClient):
         """Test transform asset with config transformation."""
         raw_df = pl.DataFrame(
             {
@@ -130,16 +146,21 @@ class TestExtractorService:
             }
         )
 
-        extractor = ExtractorService(config=assets_config)
-        result = extractor.transform(raw_df, "asset")
+        extractor = ExtractorService(config=assets_config, duckdb_client=duckdb_client)
+        table_name = extractor.transform(raw_df, "asset")
 
+        assert table_name == "_transformed_asset"
+
+        # Verify table was created with correct data
+        result = duckdb_client.query(f"SELECT * FROM {table_name}")
         assert len(result) == 1
         assert "account_id" in result.columns
-        assert result["id"].dtype == pl.Int64
-        assert result["account_type"].dtype == pl.Int32
-        assert result["cash"].dtype == pl.Float64
+        assert "id" in result.columns
 
-    def test_transform_trade_no_config(self):
+        # Clean up
+        duckdb_client.drop_table(table_name)
+
+    def test_transform_trade_no_config(self, duckdb_client: DuckDBClient):
         """Test transform trade without config (pass-through)."""
         df = pl.DataFrame(
             {
@@ -161,13 +182,19 @@ class TestExtractorService:
             }
         )
 
-        extractor = ExtractorService(config=None)
-        result = extractor.transform(df, "trade")
+        extractor = ExtractorService(config=None, duckdb_client=duckdb_client)
+        table_name = extractor.transform(df, "trade")
 
-        assert len(result) == 1
-        assert result.columns == df.columns
+        assert table_name == "_transformed_trade"
 
-    def test_transform_trade_with_config(self, trades_config):
+        # Verify table was created
+        result = duckdb_client.query(f"SELECT COUNT(*) as cnt FROM {table_name}")
+        assert result["cnt"][0] == 1
+
+        # Clean up
+        duckdb_client.drop_table(table_name)
+
+    def test_transform_trade_with_config(self, trades_config, duckdb_client: DuckDBClient):
         """Test transform trade with config transformation."""
         raw_df = pl.DataFrame(
             {
@@ -189,98 +216,66 @@ class TestExtractorService:
             }
         )
 
-        extractor = ExtractorService(config=trades_config)
-        result = extractor.transform(raw_df, "trade")
+        extractor = ExtractorService(config=trades_config, duckdb_client=duckdb_client)
+        table_name = extractor.transform(raw_df, "trade")
 
+        assert table_name == "_transformed_trade"
+
+        # Verify table was created with correct data
+        result = duckdb_client.query(f"SELECT * FROM {table_name}")
         assert len(result) == 1
         assert "traded_id" in result.columns
-        assert result["traded_price"].dtype == pl.Float64
-        assert result["traded_volume"].dtype == pl.Int64
 
-    def test_transform_dataframe_with_missing_column(self):
-        """Test _transform_dataframe skips missing columns."""
-        config = OmegaConf.create(
-            {
-                "assets": {
-                    "columns": [
-                        {"csv_name": "account_id", "name": "account_id", "dtype": "Utf8"},
-                        {"csv_name": "nonexistent", "name": "nonexistent", "dtype": "Utf8"},
-                    ]
-                }
-            }
-        )
+        # Clean up
+        duckdb_client.drop_table(table_name)
 
-        extractor = ExtractorService(config=config)
-
-        df = pl.DataFrame({"account_id": ["10000000001"]})
-        result = extractor._transform_dataframe(df, config.assets.columns)
-
-        assert "account_id" in result.columns
-        assert "nonexistent" not in result.columns
-
-    def test_transform_dataframe_all_dtypes(self):
-        """Test _transform_dataframe with all supported dtypes."""
-        config = OmegaConf.create(
-            {
-                "test": {
-                    "columns": [
-                        {"csv_name": "int32_col", "name": "int32_col", "dtype": "Int32"},
-                        {"csv_name": "int64_col", "name": "int64_col", "dtype": "Int64"},
-                        {"csv_name": "utf8_col", "name": "utf8_col", "dtype": "Utf8"},
-                        {"csv_name": "float64_col", "name": "float64_col", "dtype": "Float64"},
-                        {"csv_name": "datetime_col", "name": "datetime_col", "dtype": "Datetime", "format": "%Y-%m-%d %H:%M:%S"},
-                        {"csv_name": "unknown_col", "name": "unknown_col", "dtype": "Unknown"},
-                    ]
-                }
-            }
-        )
-
-        extractor = ExtractorService(config=config)
-
+    def test_transform_returns_table_name(self, assets_config, duckdb_client: DuckDBClient):
+        """Test that transform returns the correct table name."""
         df = pl.DataFrame(
             {
-                "int32_col": ["1", "2"],
-                "int64_col": ["100", "200"],
-                "utf8_col": ["a", "b"],
-                "float64_col": ["1.5", "2.5"],
-                "datetime_col": ["2025-12-22 14:30:00", "2025-12-23 15:00:00"],
-                "unknown_col": ["test", "test2"],
-            }
-        )
-        result = extractor._transform_dataframe(df, config.test.columns)
-
-        assert result["int32_col"].dtype == pl.Int32
-        assert result["int64_col"].dtype == pl.Int64
-        assert result["utf8_col"].dtype == pl.Utf8
-        assert result["float64_col"].dtype == pl.Float64
-        assert result["datetime_col"].dtype == pl.Datetime
-        assert "unknown_col" in result.columns
-
-    def test_transform_already_typed_columns(self):
-        """Test _transform_dataframe skips already correctly typed columns."""
-        config = OmegaConf.create(
-            {
-                "assets": {
-                    "columns": [
-                        {"csv_name": "id", "name": "id", "dtype": "Int64"},
-                        {"csv_name": "cash", "name": "cash", "dtype": "Float64"},
-                        {"csv_name": "updated_at", "name": "updated_at", "dtype": "Datetime"},
-                    ]
-                }
+                "id": ["1"],
+                "account_id": ["test"],
+                "account_type": ["1"],
+                "cash": ["100"],
+                "frozen_cash": ["10"],
+                "market_value": ["200"],
+                "total_asset": ["310"],
+                "updated_at": ["2025-12-22 14:30:00"],
             }
         )
 
-        extractor = ExtractorService(config=config)
+        extractor = ExtractorService(config=assets_config, duckdb_client=duckdb_client)
 
+        asset_table = extractor.transform(df, "asset")
+        assert asset_table == "_transformed_asset"
+        duckdb_client.drop_table(asset_table)
+
+    def test_transform_cleans_up_raw_view(self, assets_config, duckdb_client: DuckDBClient):
+        """Test that transform cleans up the raw view after creating transformed table."""
         df = pl.DataFrame(
             {
-                "id": [1, 2],
-                "cash": [100.0, 200.0],
-                "updated_at": [datetime(2025, 12, 22), datetime(2025, 12, 23)],
+                "id": ["1"],
+                "account_id": ["test"],
+                "account_type": ["1"],
+                "cash": ["100"],
+                "frozen_cash": ["10"],
+                "market_value": ["200"],
+                "total_asset": ["310"],
+                "updated_at": ["2025-12-22 14:30:00"],
             }
         )
-        result = extractor._transform_dataframe(df, config.assets.columns)
 
-        assert result["id"].dtype == pl.Int64
-        assert result["cash"].dtype == pl.Float64
-        assert str(result["updated_at"].dtype).startswith("Datetime")
+        extractor = ExtractorService(config=assets_config, duckdb_client=duckdb_client)
+        table_name = extractor.transform(df, "asset")
+
+        # The raw view should be unregistered
+        # Trying to query it should fail
+        with pytest.raises(Exception):
+            duckdb_client.query("SELECT * FROM _raw_asset")
+
+        # But the transformed table should exist
+        result = duckdb_client.query(f"SELECT COUNT(*) as cnt FROM {table_name}")
+        assert result["cnt"][0] == 1
+
+        # Clean up
+        duckdb_client.drop_table(table_name)

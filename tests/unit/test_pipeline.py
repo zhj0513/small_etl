@@ -143,7 +143,7 @@ class TestETLPipeline:
         ]
 
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.transform.side_effect = [mock_asset_df, mock_trade_df]
+        mock_extractor.transform.side_effect = ["_transformed_asset", "_transformed_trade"]
 
         mock_loader = mock_loader_cls.return_value
         mock_loader.load.return_value = mock_load_result_success
@@ -165,6 +165,8 @@ class TestETLPipeline:
 
         assert mock_validator.fetch_and_validate.call_count == 2
         assert mock_extractor.transform.call_count == 2
+        # Verify drop_table was called to clean up
+        assert mock_duckdb.drop_table.call_count == 2
 
     @patch("small_etl.application.pipeline.DuckDBClient")
     @patch("small_etl.application.pipeline.PostgresRepository")
@@ -209,7 +211,6 @@ class TestETLPipeline:
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
         mock_config: MagicMock,
-        mock_asset_df: pl.DataFrame,
         mock_validation_result_valid: ValidationResult,
         mock_load_result_failure: LoadResult,
     ) -> None:
@@ -218,7 +219,7 @@ class TestETLPipeline:
         mock_validator.fetch_and_validate.return_value = mock_validation_result_valid
 
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.transform.return_value = mock_asset_df
+        mock_extractor.transform.return_value = "_transformed_asset"
 
         mock_loader = mock_loader_cls.return_value
         mock_loader.load.return_value = mock_load_result_failure
@@ -244,7 +245,6 @@ class TestETLPipeline:
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
         mock_config: MagicMock,
-        mock_asset_df: pl.DataFrame,
         mock_validation_result_valid: ValidationResult,
         mock_validation_result_invalid: ValidationResult,
         mock_load_result_success: LoadResult,
@@ -257,7 +257,7 @@ class TestETLPipeline:
         ]
 
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.transform.return_value = mock_asset_df
+        mock_extractor.transform.return_value = "_transformed_asset"
 
         mock_loader = mock_loader_cls.return_value
         mock_loader.load.return_value = mock_load_result_success
@@ -313,7 +313,6 @@ class TestETLPipeline:
         mock_repo_cls: MagicMock,
         mock_duckdb_cls: MagicMock,
         mock_config: MagicMock,
-        mock_asset_df: pl.DataFrame,
         mock_validation_result_valid: ValidationResult,
         mock_load_result_success: LoadResult,
     ) -> None:
@@ -322,7 +321,7 @@ class TestETLPipeline:
         mock_validator.fetch_and_validate.return_value = mock_validation_result_valid
 
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.transform.return_value = mock_asset_df
+        mock_extractor.transform.return_value = "_transformed_asset"
 
         mock_loader = mock_loader_cls.return_value
         mock_loader.load.return_value = mock_load_result_success
@@ -363,7 +362,7 @@ class TestETLPipeline:
         mock_validator.fetch_and_validate.return_value = ValidationResult(is_valid=True, data=mock_trade_df)
 
         mock_extractor = mock_extractor_cls.return_value
-        mock_extractor.transform.return_value = mock_trade_df
+        mock_extractor.transform.return_value = "_transformed_trade"
 
         mock_loader = mock_loader_cls.return_value
         mock_loader.load.return_value = mock_load_result_success
