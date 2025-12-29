@@ -71,22 +71,28 @@ src/small_etl/
 flowchart LR
     S3[S3 CSV] --> Polars[Polars]
     Polars --> Validator[ValidatorService]
-    Validator --> Extractor[ExtractorService]
-    Extractor --> Loader[LoaderService]
-    Loader --> DuckDB[DuckDB]
-    DuckDB --> PostgreSQL
+    Validator --> DuckDB1[DuckDB Register]
+    DuckDB1 --> Transform[SQL Transform]
+    Transform --> Table[DuckDB Table]
+    Table --> PostgreSQL
     PostgreSQL --> Analytics[AnalyticsService]
 ```
+
+**Pipeline Phases:**
+1. **Validate**: Polars reads S3 CSV → Pandera validates
+2. **Transform**: DuckDB registers DataFrame → SQL transforms → DuckDB table (`_transformed_{type}`)
+3. **Load**: DuckDB UPSERT from table → PostgreSQL
+4. **Analytics**: DuckDB queries PostgreSQL statistics
 
 ### Key Components
 
 - **ETLPipeline** (`application/pipeline.py`): Main orchestrator, use `with ETLPipeline(config) as pipeline`. Configuration-driven via `pipeline/default.yaml`
 - **ValidatorService** (`services/validator.py`): Uses Polars to read CSV from S3, validates with Pandera schemas
-- **ExtractorService** (`services/extractor.py`): Transforms validated data with type conversions based on Hydra config
-- **LoaderService** (`services/loader.py`): Batch loads data to PostgreSQL using DuckDB postgres extension
+- **ExtractorService** (`services/extractor.py`): Registers DataFrame to DuckDB, uses SQL for type conversions, returns table name
+- **LoaderService** (`services/loader.py`): Loads data from DuckDB table to PostgreSQL using `upsert_from_table`
 - **AnalyticsService** (`services/analytics.py`): Queries statistics from PostgreSQL via DuckDB
 - **PostgresRepository** (`data_access/postgres_repository.py`): Database operations (queries, truncate)
-- **DuckDBClient** (`data_access/duckdb_client.py`): In-memory operations, PostgreSQL attachment, upsert operations
+- **DuckDBClient** (`data_access/duckdb_client.py`): In-memory operations, DataFrame registration, SQL transforms, PostgreSQL attachment, upsert operations
 - **DataTypeRegistry** (`domain/registry.py`): Centralized registry for data type configurations
 
 ### Data Models

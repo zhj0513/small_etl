@@ -25,16 +25,16 @@
 - **外键验证**：检查 Trade 的 account_id 是否存在于 Asset 表中
 
 ### ExtractorService - 类型转换
+- **DuckDB SQL 转换**：将 DataFrame 注册到 DuckDB，使用 SQL 进行类型转换
 - **配置驱动转换**：使用 `configs/extractor/default.yaml` 定义列映射
 - **智能类型检查**：转换前检查列类型，如果已是目标类型则跳过转换
-- **transform() 方法**：将验证后的 DataFrame 按配置进行类型转换
+- **transform() 方法**：返回 DuckDB 表名（如 `_transformed_asset`），供 LoaderService 使用
 
 ### LoaderService - 数据写入
-- 使用 DuckDB 的 PostgreSQL 插件进行批量 UPSERT
+- 从 DuckDB 表加载数据到 PostgreSQL，使用 `upsert_from_table` 方法
 - **UPDATE + INSERT 分离策略**：
-  1. 注册 DataFrame 为 DuckDB 临时表
-  2. UPDATE 已存在的记录
-  3. INSERT 新记录（使用 NOT EXISTS 过滤）
+  1. UPDATE 已存在的记录
+  2. INSERT 新记录（使用 NOT EXISTS 过滤）
 - 原因：避免外键约束下 ON CONFLICT 的死锁问题
 
 ### AnalyticsService - 数据分析
@@ -48,7 +48,18 @@ Assets 必须先于 Trades 处理（外键约束：Trade.account_id → Asset.ac
 
 **完整数据流：**
 ```
-S3 CSV → Polars 读取 → ValidatorService 验证 → (有效→ExtractorService, 无效→日志) → 类型转换 → LoaderService 入库 → DuckDB PostgreSQL插件 → PostgreSQL → AnalyticsService 分析
+S3 CSV → Polars 读取 → ValidatorService 验证 → (有效→DuckDB 注册, 无效→日志) → DuckDB SQL 转换 → DuckDB 表 → LoaderService 入库 → PostgreSQL → AnalyticsService 分析
+```
+
+**Pipeline 内部流程：**
+```
+Phase 1: Polars 读取 S3 CSV
+Phase 2: Pandera 验证
+Phase 3: DuckDB register_dataframe() 注册 DataFrame
+Phase 4: DuckDB create_transformed_table() SQL 类型转换
+Phase 5: DuckDB upsert_from_table() 加载到 PostgreSQL
+Phase 6: drop_table() 清理临时表
+Phase 7: AnalyticsService 统计分析 (可选)
 ```
 
 ## 必须遵守的约束
@@ -70,8 +81,8 @@ S3 CSV → Polars 读取 → ValidatorService 验证 → (有效→ExtractorServ
 
 ### 时间戳格式
 - CSV 解析格式：`%Y-%m-%dT%H:%M:%S%.f`（ISO 8601 带微秒）
-- DuckDB CSV 导入格式：`timestampformat='%Y-%m-%dT%H:%M:%S'`（DuckDB `read_csv_auto` 自动推断类型时使用）
-- DuckDB 读取后时区：`datetime[μs, Asia/Shanghai]`，转换时自动检测跳过
+- DuckDB strptime 格式：`%Y-%m-%dT%H:%M:%S.%g`（DuckDB 使用 `%g` 替代 `%.f`）
+- DuckDB 智能检查：如果列已是 TIMESTAMP 类型，跳过 strptime 转换，直接重命名
 
 ## 配置文件结构
 
@@ -111,7 +122,7 @@ assets:
   columns:
     - name: account_id        # 目标列名
       csv_name: account_id    # CSV 原始列名
-      dtype: Utf8             # Polars 数据类型: Int32, Int64, Float64, Utf8, Datetime
+      dtype: Utf8             # 数据类型: Int32, Int64, Float64, Utf8, Datetime, Decimal
       nullable: false
     - name: updated_at
       csv_name: updated_at
@@ -125,6 +136,17 @@ csv_options:
   encoding: "utf-8"
   null_values: ["", "NULL", "null", "None"]
 ```
+
+**DuckDB SQL 类型转换对照:**
+
+| 配置 dtype | DuckDB SQL 表达式 |
+|------------|-------------------|
+| Utf8 | `CAST("{col}" AS VARCHAR) AS {name}` |
+| Int32 | `CAST("{col}" AS INTEGER) AS {name}` |
+| Int64 | `CAST("{col}" AS BIGINT) AS {name}` |
+| Float64 | `CAST("{col}" AS DOUBLE) AS {name}` |
+| Decimal(p,s) | `CAST("{col}" AS DECIMAL({p},{s})) AS {name}` |
+| Datetime | `strptime("{col}", '{format}') AS {name}` 或直接重命名 (已是 TIMESTAMP) |
 
 ### scheduler 配置格式
 ```yaml
@@ -147,7 +169,9 @@ tests/
 ├── unit/                    # 单元测试（无外部依赖）
 │   ├── test_analytics.py
 │   ├── test_cli.py
-│   ├── test_duckdb.py
+│   ├── test_duckdb.py       # DuckDBClient 测试（包含转换方法）
+│   ├── test_extractor.py    # ExtractorService 测试（DuckDB SQL 转换）
+│   ├── test_loader.py       # LoaderService 测试（表名参数）
 │   ├── test_models.py
 │   ├── test_pipeline.py
 │   └── test_validator.py

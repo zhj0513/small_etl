@@ -11,11 +11,12 @@ flowchart LR
     subgraph SYS["Small ETL System"]
         S3["S3/MinIO\n(CSV Files)"] --> Polars["Polars\n(读取 CSV)"]
         Polars --> Validator["ValidatorService\n(Pandera 验证)"]
-        Validator -->|有效| Extractor["ExtractorService\n(类型转换)"]
+        Validator -->|有效| DuckReg["DuckDB Register\n(注册 DataFrame)"]
         Validator -->|无效| Log["错误日志"]
-        Extractor --> Load["LoaderService\n(数据入库)"]
-        Load --> DuckDB["DuckDB\n(PostgreSQL插件)"]
-        DuckDB --> PG["PostgreSQL"]
+        DuckReg --> Transform["DuckDB SQL\n(类型转换)"]
+        Transform --> Table["DuckDB Table\n(_transformed_*)"]
+        Table --> Load["LoaderService\n(UPSERT)"]
+        Load --> PG["PostgreSQL"]
         PG --> Analytics["AnalyticsService\n(统计分析)"]
     end
 ```
@@ -116,12 +117,12 @@ flowchart TB
 
 #### Service Layer (服务层)
 - **ValidatorService**: 使用 Polars 读取 S3 CSV，通过 Pandera 验证数据合法性，返回 ValidationResult
-- **ExtractorService**: 根据 Hydra 配置进行类型转换（不再使用 DuckDB 读取数据）
-- **LoaderService**: 使用 DuckDB PostgreSQL 插件批量将 DataFrame 加载到 PostgreSQL
+- **ExtractorService**: 将 DataFrame 注册到 DuckDB，使用 SQL 进行类型转换，返回 DuckDB 表名
+- **LoaderService**: 从 DuckDB 表加载数据到 PostgreSQL，使用 `upsert_from_table` 方法
 - **AnalyticsService**: 通过 DuckDB 查询 PostgreSQL 中的已入库数据进行统计分析
 
 #### Data Access Layer (数据访问层)
-- **DuckDBClient**: 内存数据库操作，PostgreSQL 插件写入，统计查询
+- **DuckDBClient**: 内存数据库操作，DataFrame 注册，SQL 转换，PostgreSQL 附加，UPSERT 操作
 - **PostgresRepository**: 数据库操作（表清空等）
 
 #### Domain Layer (领域层)
@@ -372,13 +373,14 @@ jobs:
 ```mermaid
 flowchart LR
     subgraph Pipeline["ETLPipeline"]
-        V["Validate"] --> E["Transform"] --> L["Load"] --> A["Analytics"]
+        V["Validate"] --> R["Register"] --> T["Transform"] --> L["Load"] --> A["Analytics"]
     end
 
     V --> Polars["Polars\n读取S3 CSV"]
     V --> VS["ValidatorService"]
-    E --> EX["ExtractorService"]
-    L --> Duck["DuckDBClient"]
+    R --> Duck1["DuckDBClient\nregister_dataframe"]
+    T --> Duck2["DuckDBClient\ncreate_transformed_table"]
+    L --> Duck3["DuckDBClient\nupsert_from_table"]
     A --> AS["AnalyticsService"]
 ```
 
@@ -439,50 +441,57 @@ class ValidatorService:
 #### 3.3.3 ExtractorService (转换器)
 
 **职责:**
-- 根据 Hydra 配置进行列转换和类型映射
+- 将验证后的 DataFrame 注册到 DuckDB
+- 使用 DuckDB SQL 进行列转换和类型映射
 - 智能类型检查（已是目标类型则跳过转换）
+- 返回 DuckDB 表名供 LoaderService 使用
 
 **接口:**
 ```python
 class ExtractorService:
-    def __init__(self, config: DictConfig | None = None): ...
-    def transform(self, df: pl.DataFrame, data_type: str) -> pl.DataFrame: ...
+    def __init__(self, config: DictConfig | None = None, duckdb_client: DuckDBClient | None = None): ...
+    def transform(self, df: pl.DataFrame, data_type: str) -> str:
+        """返回 DuckDB 表名 (如 "_transformed_asset")"""
+        ...
 ```
 
-**配置驱动转换 (_transform_dataframe):**
+**DuckDB SQL 转换流程:**
 
 ```python
-def _transform_dataframe(self, df: pl.DataFrame, columns_config: list[Any]) -> pl.DataFrame:
-    """根据 Hydra 配置进行列转换（带类型检查）"""
-    expressions = []
-    for col_cfg in columns_config:
-        csv_name = col_cfg.csv_name    # CSV 中的原始列名
-        target_name = col_cfg.name     # 目标列名
-        dtype = col_cfg.dtype          # 目标数据类型
-        col_dtype = df[csv_name].dtype  # 当前列类型
+def transform(self, df: pl.DataFrame, data_type: str) -> str:
+    """使用 DuckDB SQL 转换数据"""
+    raw_table = f"_raw_{data_type}"
+    transformed_table = f"_transformed_{data_type}"
 
-        if dtype == "Datetime":
-            # 如果已经是 Datetime 类型，只重命名；否则从字符串解析
-            if col_dtype == pl.Datetime or str(col_dtype).startswith("Datetime"):
-                expr = pl.col(csv_name).alias(target_name)
-            else:
-                fmt = getattr(col_cfg, "format", "%Y-%m-%dT%H:%M:%S")
-                expr = pl.col(csv_name).str.to_datetime(fmt).alias(target_name)
-        elif dtype == "Float64":
-            if col_dtype == pl.Float64:
-                expr = pl.col(csv_name).alias(target_name)
-            else:
-                expr = pl.col(csv_name).cast(pl.Float64).alias(target_name)
-        # 类似处理 Utf8, Int32, Int64, Decimal...
-        expressions.append(expr)
+    # 1. 注册原始 DataFrame 为 DuckDB 视图
+    self._duckdb.register_dataframe(df, raw_table)
 
-    return df.select(expressions)
+    # 2. 获取配置并创建转换后的表
+    columns_config = getattr(self._config, f"{data_type}s").columns
+    self._duckdb.create_transformed_table(raw_table, transformed_table, columns_config)
+
+    # 3. 清理原始视图
+    self._duckdb.unregister(raw_table)
+
+    return transformed_table
 ```
+
+**DuckDB SQL 类型转换对照:**
+
+| 配置 dtype | DuckDB SQL 表达式 |
+|------------|-------------------|
+| Utf8 | `CAST("{col}" AS VARCHAR) AS {name}` |
+| Int32 | `CAST("{col}" AS INTEGER) AS {name}` |
+| Int64 | `CAST("{col}" AS BIGINT) AS {name}` |
+| Float64 | `CAST("{col}" AS DOUBLE) AS {name}` |
+| Decimal(p,s) | `CAST("{col}" AS DECIMAL({p},{s})) AS {name}` |
+| Datetime | `strptime("{col}", '{format}') AS {name}` (字符串) 或直接重命名 (已是 TIMESTAMP) |
 
 #### 3.3.4 LoaderService (加载器)
 
 **职责:**
-- 使用 DuckDB PostgreSQL 插件批量写入数据库
+- 从 DuckDB 表加载数据到 PostgreSQL
+- 使用 DuckDB PostgreSQL 插件的 `upsert_from_table` 方法
 - 支持 UPSERT 操作（存在则更新，不存在则插入）
 
 **接口:**
@@ -497,24 +506,27 @@ class LoadResult:
 
 class LoaderService:
     def __init__(self, repository: PostgresRepository, duckdb_client: DuckDBClient, database_url: str): ...
-    def load(self, df: pl.DataFrame, data_type: str, batch_size: int = 10000) -> LoadResult: ...
+    def load(self, source_table: str, data_type: str) -> LoadResult:
+        """从 DuckDB 表加载数据到 PostgreSQL"""
+        ...
 ```
 
-**批处理实现:**
+**加载实现:**
 
 ```python
-def load(self, df: pl.DataFrame, data_type: str, batch_size: int = 10000) -> LoadResult:
+def load(self, source_table: str, data_type: str) -> LoadResult:
+    """从 DuckDB 表加载数据到 PostgreSQL"""
     config = DataTypeRegistry.get(data_type)
-    total_loaded = 0
 
-    for batch_start in range(0, len(df), batch_size):
-        batch_df = df.slice(batch_start, batch_size)
-        # 只选择数据库表中存在的列
-        batch_df = batch_df.select([c for c in config.db_columns if c in batch_df.columns])
-        loaded = self._duckdb.upsert_to_postgres(batch_df, config.table_name, config.unique_key)
-        total_loaded += loaded
+    # 直接从 DuckDB 表 UPSERT 到 PostgreSQL
+    total_loaded = self._duckdb.upsert_from_table(
+        source_table=source_table,      # 如 "_transformed_asset"
+        pg_table=config.table_name,     # 如 "asset"
+        conflict_column=config.unique_key,
+        columns=config.db_columns,
+    )
 
-    return LoadResult(success=True, total_rows=len(df), loaded_count=total_loaded)
+    return LoadResult(success=True, total_rows=total_loaded, loaded_count=total_loaded)
 ```
 
 #### 3.3.5 AnalyticsService (统计分析)
@@ -838,15 +850,17 @@ csv_options:
   null_values: ["", "NULL", "null", "None"]
 ```
 
-### 3.6 DuckDB PostgreSQL 插件集成
+### 3.6 DuckDB 数据转换与 PostgreSQL 集成
 
-ETL 系统使用 DuckDB 的 PostgreSQL 扩展实现高性能数据操作：
+ETL 系统使用 DuckDB 进行数据转换和 PostgreSQL 写入：
 
 ```mermaid
 flowchart LR
     subgraph DuckDB["DuckDB In-Memory"]
-        DF["Polars DataFrame"] --> TempTable["临时表"]
-        TempTable --> Query["SQL 查询/转换"]
+        DF["Polars DataFrame"] --> Register["register_dataframe()"]
+        Register --> View["_raw_{type} 视图"]
+        View --> Transform["create_transformed_table()"]
+        Transform --> Table["_transformed_{type} 表"]
     end
 
     subgraph PG["PostgreSQL (via pg 扩展)"]
@@ -854,9 +868,54 @@ flowchart LR
         Trade["pg.trade"]
     end
 
-    Query --> |upsert_to_postgres| Asset
-    Query --> |upsert_to_postgres| Trade
+    Table --> |upsert_from_table| Asset
+    Table --> |upsert_from_table| Trade
     Asset --> |query_asset_statistics| Stats["统计结果"]
+```
+
+**DuckDBClient 核心方法:**
+
+```python
+class DuckDBClient:
+    def register_dataframe(self, df: pl.DataFrame, table_name: str) -> None:
+        """将 Polars DataFrame 注册为 DuckDB 视图"""
+        self._conn.register(table_name, df.to_arrow())
+
+    def unregister(self, table_name: str) -> None:
+        """注销 DuckDB 视图"""
+        self._conn.unregister(table_name)
+
+    def create_transformed_table(
+        self,
+        source_table: str,
+        target_table: str,
+        columns_config: list[Any],
+    ) -> int:
+        """使用 SQL 转换数据并创建本地表
+
+        - 列重命名 (csv_name → name)
+        - 类型转换 (CAST, strptime)
+        - 智能类型检查（已是目标类型则跳过转换）
+
+        Returns:
+            转换后的行数
+        """
+
+    def drop_table(self, table_name: str) -> None:
+        """删除 DuckDB 本地表"""
+        self._conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+
+    def upsert_from_table(
+        self,
+        source_table: str,
+        pg_table: str,
+        conflict_column: str,
+        columns: list[str],
+    ) -> int:
+        """从 DuckDB 表 UPSERT 到 PostgreSQL
+
+        UPDATE + INSERT 分离策略，避免外键约束死锁
+        """
 ```
 
 **初始化流程:**
@@ -869,8 +928,12 @@ class ETLPipeline:
 
         # 2. 安装并加载 postgres 扩展，附加 PostgreSQL 数据库
         self._duckdb.attach_postgres(config.db.url)
-        # 执行: INSTALL postgres; LOAD postgres;
-        # 执行: ATTACH 'postgresql://...' AS pg (TYPE POSTGRES)
+
+        # 3. 创建 ExtractorService 并传入 DuckDB 客户端
+        self._extractor = ExtractorService(
+            config=getattr(config, "extractor", None),
+            duckdb_client=self._duckdb,
+        )
 ```
 
 **attach_postgres 实现:**
@@ -932,9 +995,11 @@ flowchart TD
     Config --> Loop["遍历 pipeline.steps"]
     Loop --> ReadA["Phase 1: 读取 CSV\nPolars 从 S3 读取"]
     ReadA --> ValidateA["Phase 2: 验证数据\n字段检查 + 业务规则"]
-    ValidateA --> TransformA["Phase 3: 类型转换\nExtractorService"]
-    TransformA --> LoadA["Phase 4: 加载数据\nDuckDB UPSERT"]
-    LoadA --> Analytics["Phase 5: 统计分析\n(可选)"]
+    ValidateA --> RegisterA["Phase 3: 注册到 DuckDB\nregister_dataframe()"]
+    RegisterA --> TransformA["Phase 4: SQL 类型转换\ncreate_transformed_table()"]
+    TransformA --> LoadA["Phase 5: 加载数据\nupsert_from_table()"]
+    LoadA --> CleanupA["清理临时表\ndrop_table()"]
+    CleanupA --> Analytics["Phase 6: 统计分析\n(可选)"]
     Analytics --> NextStep{还有更多步骤?}
     NextStep -->|是| Loop
     NextStep -->|否| Result["返回 PipelineResult"]
@@ -951,32 +1016,24 @@ flowchart LR
     Polars --> Validate["ValidatorService\nPandera验证"]
     Validate --> Valid["有效数据"]
     Validate --> Invalid["无效数据\n→日志记录"]
-    Valid --> Transform["ExtractorService\n类型转换"]
-    Transform --> UPSERT["DuckDBClient\nupsert_to_postgres()"]
+    Valid --> Register["DuckDBClient\nregister_dataframe()"]
+    Register --> Transform["DuckDBClient\ncreate_transformed_table()"]
+    Transform --> Table["_transformed_* 表"]
+    Table --> UPSERT["DuckDBClient\nupsert_from_table()"]
+    UPSERT --> PG["PostgreSQL"]
 ```
 
-### 4.3 批处理流程
+### 4.3 DuckDB 转换优势
 
-为处理大文件，采用批处理策略:
+相比之前的 Polars 转换方案，DuckDB SQL 转换具有以下优势：
 
-```
-Polars DataFrame (N rows)
-     │
-     ├─▶ Batch 1 (rows 0 - 9999)
-     │        │
-     │        └─▶ duckdb.upsert_to_postgres()
-     │
-     ├─▶ Batch 2 (rows 10000 - 19999)
-     │        │
-     │        └─▶ duckdb.upsert_to_postgres()
-     │
-     └─▶ Batch N ...
-              │
-              └─▶ ...
-```
-
-- 默认批量大小: 10,000 行/批次
-- 使用 `df.slice(offset, length)` 切分
+| 特性 | 说明 |
+|------|------|
+| **减少数据拷贝** | 避免 Polars → Arrow → DuckDB 的重复转换 |
+| **向量化 SQL** | DuckDB 的 SIMD 优化 SQL 执行 |
+| **零拷贝加载** | 直接 SQL 操作，无需 Python 中间层 |
+| **内存效率** | 数据始终在 DuckDB 内存中，避免多份副本 |
+| **智能类型检查** | 如果列已是目标类型则跳过转换，避免不必要的 strptime 调用 |
 
 ## 5. 错误处理策略
 
@@ -996,11 +1053,11 @@ Polars DataFrame (N rows)
 
 ## 6. 性能优化设计
 
-### 6.1 批量处理
+### 6.1 DuckDB 转换与加载
 
-- 批量大小: 10,000 行/批次 (可配置)
-- 使用 Polars 列式处理，高效内存使用
-- DuckDB 内存数据库，快速 SQL 查询
+- 使用 DuckDB SQL 进行向量化类型转换
+- 智能类型检查：跳过已是目标类型的列
+- 直接从 DuckDB 表 UPSERT 到 PostgreSQL，无需 Python 中间层
 
 ### 6.2 数据库优化
 
@@ -1019,7 +1076,8 @@ Polars DataFrame (N rows)
 
 ### 6.3 数据转换
 
-- 使用 DuckDB `upsert_to_postgres()` 直接写入数据库
+- 使用 DuckDB SQL 类型转换，避免 Python 中间层
+- 类型转换前检查源列类型，跳过不必要的转换
 - Decimal 精度处理: 模型中使用 Decimal，DataFrame 中使用 float
 - None/null 值处理: 可选字段默认 None
 
@@ -1032,8 +1090,9 @@ tests/
 ├── conftest.py              # 共享 fixtures
 ├── unit/                    # 单元测试 (无外部依赖)
 │   ├── test_analytics.py    # AnalyticsService 测试
-│   ├── test_duckdb.py       # DuckDBClient 测试
-│   ├── test_models.py       # 数据模型测试
+│   ├── test_duckdb.py       # DuckDBClient 测试 (包含转换方法)
+│   ├── test_extractor.py    # ExtractorService 测试 (DuckDB SQL 转换)
+│   ├── test_loader.py       # LoaderService 测试 (表名参数)
 │   ├── test_pipeline.py     # Pipeline 测试
 │   └── test_validator.py    # ValidatorService 测试
 └── integration/             # 集成测试 (需要 PostgreSQL)

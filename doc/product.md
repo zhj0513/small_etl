@@ -20,20 +20,22 @@ flowchart LR
     S3[S3 / MinIO<br/>CSV 文件]
     Polars[Polars<br/>读取 CSV]
     Validate[ValidatorService<br/>数据验证]
-    Transform[ExtractorService<br/>类型转换]
+    Register[DuckDB Register<br/>注册 DataFrame]
+    Transform[DuckDB SQL<br/>类型转换]
+    Table[DuckDB Table<br/>_transformed_*]
     Load[LoaderService<br/>数据入库]
-    DuckDB[DuckDB<br/>PostgreSQL插件]
     PG[PostgreSQL]
     Analytics[AnalyticsService<br/>统计分析]
     Log[错误日志<br/>流程终止]
 
     S3 --> Polars
     Polars --> Validate
-    Validate -->|CSV 有效| Transform
+    Validate -->|CSV 有效| Register
     Validate -->|CSV 无效| Log
-    Transform --> Load
-    Load --> DuckDB
-    DuckDB --> PG
+    Register --> Transform
+    Transform --> Table
+    Table --> Load
+    Load --> PG
     PG --> Analytics
 ```
 
@@ -49,11 +51,14 @@ flowchart LR
   - Trade: `traded_amount = traded_price × traded_volume`
 
 ### 2. 数据提取（类型转换）
-- ExtractorService 根据 Hydra 配置进行类型转换
-- 支持 Hydra 配置驱动的列映射和类型转换（`configs/extractor/default.yaml`）
+- ExtractorService 将 DataFrame 注册到 DuckDB
+- 使用 DuckDB SQL 进行类型转换（`configs/extractor/default.yaml` 配置驱动）
+- 智能类型检查：跳过已是目标类型的列
+- 返回 DuckDB 表名供 LoaderService 使用
 
 ### 3. 数据入库
-- 使用 DuckDB PostgreSQL 插件进行批量 UPSERT
+- LoaderService 从 DuckDB 表加载数据到 PostgreSQL
+- 使用 DuckDB PostgreSQL 插件的 `upsert_from_table` 方法
 - UPDATE + INSERT 分离策略处理外键约束
 
 ### 4. 数据分析
